@@ -1,0 +1,12 @@
+[
+  {
+    "id": "thm-heatsink-001",
+    "domain": "Thermal",
+    "prompt": "Size a heat sink for a 25W IC with maximum junction temperature 75C and ambient 25C. Assume Rjc=1 K/W and interface resistance 0.5 K/W.",
+    "expected": {
+      "required_heatsink_resistance_kw": 0.5
+    },
+    "evidence": ["thermal budget", "thermal network", "required heatsink resistance"]
+  }
+]
+

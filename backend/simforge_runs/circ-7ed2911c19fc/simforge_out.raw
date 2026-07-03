@@ -1,0 +1,16 @@
+Title: * resistive voltage divider
+Date: Wed Jul  1 10:16:42  2026
+Command: ngspice-46, Build 
+Plotname: Operating Point
+Flags: real
+No. Variables: 3
+No. Points: 1
+Variables:
+	0	v(1)	voltage
+	1	v(2)	voltage
+	2	i(v1)	current
+Values:
+ 0	1.200000000000000e+01
+	7.200000000000000e+00
+	-2.400000000000000e-03
+

@@ -1,0 +1,100 @@
+"""
+FastAPI Route: /api/circuits/solve
+=====================================
+Drop this into your existing backend app (wherever your other /api/simulate
+routes live). It reuses your existing AI chat client instead of the
+reference `default_call_llm` in netlist_ai.py — wire `call_llm` below to
+whatever function your backend already uses to hit Groq/OpenAI/etc. for the
+other domains, so circuits shares the same provider config as everything
+else.
+
+This does NOT replace your /api/simulate endpoint for other domains
+(Structural, Thermal, Fluids, ...) — those keep using their existing paths
+in domainPipeline.js / solvers.js untouched, exactly as requested. This is
+an ADDITIONAL route specifically for Circuits.
+"""
+
+import uuid
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
+
+from .orchestrator import solve_circuit_question, to_standardized_result
+from .netlist_ai import SYSTEM_PROMPT
+
+router = APIRouter(prefix="/api/circuits", tags=["circuits"])
+
+
+class CircuitSolveRequest(BaseModel):
+    question: str
+    provider: str = "groq"
+
+
+class CircuitSolveResponse(BaseModel):
+    success: bool
+    result: dict | None = None
+    error: str | None = None
+    stage: str | None = None
+
+
+def _make_llm_caller(provider: str):
+    """
+    Wire to the existing AI backend client used by ai_input_generator.py.
+    This calls the external AI service (http://localhost:8787/api/chat) 
+    which is the same pattern used by other domains in this backend.
+    
+    Falls back to direct OpenAI/Groq call if the external service is unavailable.
+    """
+    import requests
+    import os
+    import re
+
+    BACKEND_API_URL = os.environ.get('BACKEND_API_URL', 'http://localhost:8787')
+
+    def call_llm(prompt: str) -> str:
+        """Call the AI backend via HTTP API, with fallback to direct LLM call"""
+        try:
+            response = requests.post(
+                f"{BACKEND_API_URL}/api/chat",
+                json={
+                    'message': prompt,
+                    'domain': 'Circuits',
+                    'provider': provider,
+                    'conversationHistory': []
+                },
+                timeout=60
+            )
+            response.raise_for_status()
+            
+            data = response.json()
+            if not data.get('success'):
+                raise Exception(f"AI backend error: {data.get('error', 'Unknown error')}")
+            
+            return data.get('content', '')
+            
+        except requests.RequestException as e:
+            # Fallback to direct LLM call if external service is unavailable
+            from .netlist_ai import default_call_llm
+            return default_call_llm(prompt, provider=provider)
+
+    return call_llm
+
+
+@router.post("/solve", response_model=CircuitSolveResponse)
+async def solve_circuit(request: CircuitSolveRequest):
+    task_id = f"circ-{uuid.uuid4().hex[:12]}"
+    call_llm = _make_llm_caller(request.provider)
+
+    output = solve_circuit_question(
+        question=request.question,
+        call_llm=call_llm,
+        task_id=task_id,
+    )
+
+    if not output["success"]:
+        raise HTTPException(
+            status_code=422,
+            detail={"error": output["error"], "stage": output.get("stage")},
+        )
+
+    standardized = to_standardized_result(output)
+    return CircuitSolveResponse(success=True, result=standardized)

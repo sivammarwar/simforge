@@ -1,0 +1,40 @@
+Header
+  Checklist = Logical True
+  Mesh DB = "None"
+End
+
+Simulation
+  $case = "heat_conduction"
+  $simulator = "SteadyState"
+End
+
+Body 1
+  Target Bodies(1) = 1
+  Body Force(1) = 0
+  Material(1) = 1
+  Bc 1
+    Type = Dirichlet
+    Value = 150
+    Body = 1
+    Feature = 2
+  End
+  Bc 2
+    Type = Dirichlet
+    Value = 25
+    Body = 1
+    Feature = 1
+  End
+End
+
+Body 2
+  Target Bodies(1) = 1
+  Name = "Material 1"
+  Heat Conductivity = 386
+  Density = 8960
+  Specific Heat Capacity = 385
+End
+
+Mesh
+  Mesh DB = "heat_conduction"
+  Include Mesh = "heat_conduction"
+End

@@ -1,0 +1,9 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    calculix-ccx \
+    calculix-cgx \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work
+ENTRYPOINT ["ccx"]

@@ -1,0 +1,23 @@
+[
+  {
+    "id": "ckt-voltage-divider-001",
+    "domain": "Circuits",
+    "prompt": "Design a voltage divider circuit to get 5V output from a 12V input. Use standard resistor values. Also tell me the current draw.",
+    "expected": {
+      "system_type": "Voltage Divider",
+      "vout_range_v": [4.7, 5.1],
+      "current_range_ma": [1, 10]
+    },
+    "evidence": ["schematic", "output voltage", "current draw", "resistor values"]
+  },
+  {
+    "id": "ckt-rc-filter-001",
+    "domain": "Circuits",
+    "prompt": "Design a passive RC low-pass filter with cutoff frequency 1 kHz and a 1 kOhm load. Show frequency response.",
+    "expected": {
+      "requires_loading_note": true
+    },
+    "evidence": ["R/C sizing", "SPICE or analytical deck", "Bode magnitude", "phase"]
+  }
+]
+

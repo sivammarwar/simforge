@@ -1,0 +1,23 @@
+[
+  {
+    "id": "phy-spring-pulley-001",
+    "domain": "Physics",
+    "prompt": "A 2 kg block on a rough horizontal table with μ=0.3 is connected over a frictionless pulley to a 3 kg hanging block attached to a spring k=100 N/m. Released from rest when unstretched. Find maximum extension, maximum velocity, period, and energy.",
+    "expected": {
+      "xmax_range_m": [0.46, 0.48],
+      "period_range_s": [1.39, 1.42]
+    },
+    "evidence": ["FBD", "SHM equations", "maximum extension", "period", "energy"]
+  },
+  {
+    "id": "phy-circular-001",
+    "domain": "Physics",
+    "prompt": "A 10 kg object moves in circular motion with radius 2 m and speed 5 m/s. Find centripetal acceleration and force.",
+    "expected": {
+      "acceleration_m_s2": 12.5,
+      "force_n": 125
+    },
+    "evidence": ["centripetal acceleration", "centripetal force", "diagram status"]
+  }
+]
+

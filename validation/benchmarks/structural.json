@@ -1,0 +1,13 @@
+[
+  {
+    "id": "str-cantilever-001",
+    "domain": "Structural",
+    "prompt": "A steel cantilever beam is 500 mm long, 30 mm wide, 10 mm high, with 500 N at the free end. Calculate stress and deflection.",
+    "expected": {
+      "requires_stress": true,
+      "requires_deflection": true
+    },
+    "evidence": ["beam diagram", "stress", "deflection", "safety factor"]
+  }
+]
+

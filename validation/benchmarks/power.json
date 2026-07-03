@@ -1,0 +1,12 @@
+[
+  {
+    "id": "pwr-transformer-001",
+    "domain": "Power",
+    "prompt": "Calculate efficiency and losses of a transformer with primary voltage 240V, secondary voltage 120V, secondary current 10A, and efficiency 95%.",
+    "expected": {
+      "output_power_w": 1200
+    },
+    "evidence": ["output power", "input power", "losses", "primary current"]
+  }
+]
+

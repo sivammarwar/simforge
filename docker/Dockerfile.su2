@@ -1,0 +1,27 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    libboost-all-dev \
+    libopenmpi-dev \
+    libmetis-dev \
+    libhdf5-dev \
+    python3-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install SU2
+RUN cd /tmp && \
+    wget https://github.com/su2code/SU2/archive/refs/tags/v7.5.1.tar.gz && \
+    tar xzf v7.5.1.tar.gz && \
+    cd SU2-7.5.1 && \
+    mkdir build && cd build && \
+    cmake .. && \
+    make -j$(nproc) && \
+    make install && \
+    cd /tmp && rm -rf SU2-7.5.1 v7.5.1.tar.gz
+
+WORKDIR /work
+ENTRYPOINT ["SU2_CFD"]

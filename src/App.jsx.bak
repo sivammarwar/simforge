@@ -1,0 +1,2034 @@
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import TopBar from './components/TopBar';
+import LeftSidebar from './components/LeftSidebar';
+import StatusBar from './components/StatusBar';
+import ResizableLayout from './components/ResizableLayout';
+import ReasoningPane from './components/ReasoningPane';
+import ModelPane from './components/ModelPane';
+import ResultsPane from './components/ResultsPane';
+
+import MemoryOverlay from './components/MemoryOverlay';
+import SettingsModal from './components/SettingsModal';
+import CommandPalette from './components/CommandPalette';
+import Onboarding from './components/Onboarding';
+import ValidationDashboard from './components/ValidationDashboard';
+import LandingPage from './components/landing/LandingPage';
+
+import { getMemoryData, saveMemoryData, logMemoryEvent, formatTimestamp } from './services/memory';
+import { detectContradiction } from './services/triz';
+import { detectAllLookups } from './services/connectors';
+import { runSolver, compileNetlist, runSolverInstant } from './services/solvers';
+import { chatWithEngineeringBrain } from './services/llmClient';
+import { applyNaturalLanguageUpdates, detectDomainFromPrompt, planChatWorkflow } from './services/chatOrchestrator';
+import { runBrainWithTools, deriveRollingSummary, validateSVGOutput } from './services/brainOrchestrator';
+import { generateSchematic } from './services/schematicEngine';
+import { getPlots } from './services/plotEngine';
+import {
+  parseAndSemantifyQuestion,
+  checkModelQuestionAlignment,
+  checkPhysicalPlausibility,
+  checkSolverOutputSanity,
+  generateExplanation,
+  configureAIKeys,
+  getAIKeys
+} from './services/aiLayers';
+import {
+  attachFlowMetadata,
+  buildComparisonSummary,
+  buildTrizDesignOptions,
+  createFlowPlan,
+  createIterationSuggestions,
+  routeSolver,
+  updateFlowStage
+} from './services/simforgeFlow';
+
+const DOMAIN_ORDER = ['Default', 'Physics', 'Circuits', 'Structural', 'Fluids', 'Semiconductors', 'Aerospace', 'Thermal', 'Control', 'Materials', 'Power'];
+
+// Baseline Default Models
+// BUG FIX: Changed hardcoded values to null/empty for user-provided parameters.
+// Previously, defaults like '5 V', '2 kg', '500 mm' would override user question parameters.
+// Now only structural defaults (SYSTEM_TYPE, SIMULATION type, Solver) are preset.
+// Numeric parameters are null and will be populated by AI Layer 1B (Question Parser)
+// and applyNaturalLanguageUpdates from the actual user question.
+const DEFAULT_MODELS = {
+  Circuits: {
+    SYSTEM_TYPE: null,
+    INPUT: {
+      'Supply voltage': null,
+      'Source impedance': { value: '50 mΩ', tag: 'inferred', explanation: 'Typical layout DCR impedance for a ceramic input trace.' }
+    },
+    OUTPUT: {
+      'Load current': null,
+      'Output voltage': null,
+      'Target ripple': { value: '50 mV', tag: 'inferred' }
+    },
+    COMPONENTS: {
+      'Inductor (L1)': null,
+      'Capacitor (C1)': null,
+      'ESR (C1)': { value: '20 mΩ', tag: 'inferred', explanation: 'Typical ESR of MLCC ceramic capacitors at 500 kHz.' },
+      'Switch freq': null,
+      'Duty cycle': null
+    },
+    SIMULATION: {
+      'Type': { value: 'Transient', tag: 'confirmed' },
+      'Duration': { value: '500 µs', tag: 'confirmed' },
+      'Solver': { value: 'ngspice', tag: 'confirmed' },
+      'Output signal': { value: 'V(out) — output voltage ripple', tag: 'confirmed' }
+    }
+  },
+  Physics: {
+    SYSTEM_TYPE: null,
+    PROBLEM: {
+      'Problem type': { value: 'Classical mechanics', tag: 'confirmed' },
+      'Level': { value: '11th/12th physics', tag: 'confirmed' }
+    },
+    MASSES: {
+      'Mass m1': null,
+      'Mass m2': null
+    },
+    CONTACT: {
+      'Coefficient of friction': null,
+      'Contact surface': { value: 'Rough horizontal table', tag: 'inferred' },
+      'Incline angle': null
+    },
+    SPRING: {
+      'Spring constant': null,
+      'Initial stretch': { value: '0 m', tag: 'inferred' }
+    },
+    MOTION: {
+      'Initial condition': { value: 'Released from rest', tag: 'inferred' },
+      'Evaluation time': null,
+      'Travel distance': null
+    },
+    SIMULATION: {
+      'Type': { value: 'Physics mechanics solve', tag: 'confirmed' },
+      'Solver': { value: 'Analytical mechanics / SHM solver', tag: 'confirmed' },
+      'Output': { value: 'Forces, motion, energy, and plots', tag: 'confirmed' }
+    }
+  },
+  Structural: {
+    SYSTEM_TYPE: null,
+    GEOMETRY: {
+      'Length': null,
+      'Width': null,
+      'Height': null,
+      'Shape': { value: 'Solid Rectangular', tag: 'confirmed' },
+      'Profile': { value: 'Uniform', tag: 'confirmed' }
+    },
+    MATERIAL: {
+      'Material': { value: 'Structural steel (AISI 1020)', tag: 'inferred', explanation: 'Most common material for general purpose framing.' },
+      'Young\'s modulus': { value: '200 GPa', tag: 'from material DB' },
+      'Poisson\'s ratio': { value: '0.29', tag: 'from material DB' },
+      'Density': { value: '7850 kg/m³', tag: 'from material DB' }
+    },
+    LOADING: {
+      'Load type': { value: 'Point load', tag: 'confirmed' },
+      'Magnitude': null,
+      'Position': { value: 'Free end', tag: 'confirmed' }
+    },
+    SIMULATION: {
+      'Type': { value: 'Linear static FEA', tag: 'confirmed' },
+      'Solver': { value: 'CalculiX', tag: 'confirmed' },
+      'Output': { value: 'Von Mises stress, displacement', tag: 'confirmed' }
+    }
+  },
+  Fluids: {
+    SYSTEM_TYPE: null,
+    GEOMETRY: {
+      'Duct shape': { value: 'Circular', tag: 'confirmed' },
+      'Diameter': null,
+      'Length': null,
+      'Inlet Type': { value: 'Sharp-edged', tag: 'inferred', explanation: 'Default pipe entry boundary.' },
+      'Wall Texture': { value: 'Smooth', tag: 'confirmed' }
+    },
+    FLUID: {
+      'Fluid': { value: 'Air at 25°C', tag: 'inferred', explanation: 'Assumed ambient dry air standard.' },
+      'Density': { value: '1.184 kg/m³', tag: 'from fluid DB' },
+      'Dynamic viscosity': { value: '1.849e-5 Pa·s', tag: 'from fluid DB' }
+    },
+    BOUNDARY_CONDITIONS: {
+      'Inlet velocity': null,
+      'Outlet condition': { value: 'Zero-gradient pressure', tag: 'confirmed' },
+      'Wall condition': { value: 'No-slip', tag: 'confirmed' }
+    },
+    SIMULATION: {
+      'Type': { value: 'Steady-state RANS (k-ε)', tag: 'confirmed' },
+      'Solver': { value: 'OpenFOAM simpleFoam', tag: 'confirmed' },
+      'Output': { value: 'Velocity field, pressure distribution', tag: 'confirmed' }
+    }
+  },
+  Semiconductors: {
+    SYSTEM_TYPE: null,
+    GEOMETRY: {
+      'Gate Length': null,
+      'Width': null,
+      'Oxide Thickness': { value: '4.0 nm', tag: 'inferred', explanation: 'Standard gate oxide scaling thickness for 180nm CMOS node.' }
+    },
+    MATERIAL: {
+      'Channel Mobility': { value: '450 cm²/V·s', tag: 'inferred', explanation: 'Typical electron inversion layer mobility in silicon.' },
+      'Gate Dielectric': { value: 'Silicon Dioxide (SiO2)', tag: 'confirmed' },
+      'Substrate': { value: 'p-type silicon', tag: 'inferred' }
+    },
+    BIASING: {
+      'Gate Voltage': null,
+      'Drain Voltage': null,
+      'Gate sweep': null,
+      'Drain sweep': null
+    },
+    SIMULATION: {
+      'Type': { value: 'I-V Characteristics', tag: 'confirmed' },
+      'Solver': { value: 'SPICE Level 1 Model', tag: 'confirmed' }
+    }
+  },
+  Aerospace: {
+    SYSTEM_TYPE: null,
+    GEOMETRY: {
+      'Throat Diameter': null,
+      'Expansion ratio': null,
+      'Divergent Angle': { value: '15 deg', tag: 'inferred', explanation: 'Standard optimum conical nozzle half-angle for minimal divergence losses.' }
+    },
+    PROPULSION: {
+      'Chamber Pressure': null,
+      'Chamber Temperature': { value: '3000 K', tag: 'inferred', explanation: 'Typical gas combustion temperature for kerosene/LOX systems.' },
+      'Specific heat ratio': { value: '1.20', tag: 'inferred', explanation: 'Assumed specific heat ratio gamma for typical rocket exhaust products.' },
+      'Gas constant': { value: '287 J/kgK', tag: 'inferred', explanation: 'Default gas constant used for first-pass nozzle calculations.' }
+    },
+    SIMULATION: {
+      'Type': { value: '1D Isentropic Expansion', tag: 'confirmed' },
+      'Solver': { value: 'Isentropic Area-Mach Iterative', tag: 'confirmed' }
+    }
+  },
+  Thermal: {
+    SYSTEM_TYPE: null,
+    HEAT_LOAD: {
+      'Power dissipation': null
+    },
+    TEMPERATURES: {
+      'Ambient temperature': null,
+      'Maximum junction temperature': null
+    },
+    THERMAL_PATH: {
+      'Junction-to-case resistance': { value: '1.0 K/W', tag: 'inferred' },
+      'Interface resistance': { value: '0.5 K/W', tag: 'inferred' },
+      'Convection coefficient': { value: '10 W/m²K', tag: 'inferred' },
+      'Convection mode': { value: 'Natural convection', tag: 'inferred' }
+    },
+    SIMULATION: {
+      'Type': { value: 'Steady thermal resistance network', tag: 'confirmed' },
+      'Solver': { value: 'Analytical thermal budget', tag: 'confirmed' },
+      'Output': { value: 'Required heatsink resistance and area', tag: 'confirmed' }
+    }
+  },
+  Control: {
+    SYSTEM_TYPE: 'PID Control Design',
+    PLANT: {
+      'Transfer function': { value: '10/(s*(s+2))', tag: 'stated' }
+    },
+    REQUIREMENTS: {
+      'Settling time': { value: '1 s', tag: 'stated' },
+      'Maximum overshoot': { value: '15 %', tag: 'stated' }
+    },
+    CONTROLLER: {
+      'Controller type': { value: 'PID', tag: 'confirmed' },
+      'Kp': { value: '0', tag: 'calculated' },
+      'Ki': { value: '0', tag: 'calculated' },
+      'Kd': { value: '0', tag: 'calculated' }
+    },
+    SIMULATION: {
+      'Type': { value: 'Closed-loop step estimate', tag: 'confirmed' },
+      'Solver': { value: 'Pole-placement PID synthesis', tag: 'confirmed' },
+      'Output': { value: 'PID gains and response metrics', tag: 'confirmed' }
+    }
+  },
+  Materials: {
+    SYSTEM_TYPE: 'Steel Fatigue Check',
+    MATERIAL: {
+      'Material': { value: 'Steel', tag: 'stated' },
+      'Yield strength': { value: '350 MPa', tag: 'inferred' },
+      'Ultimate strength': { value: '550 MPa', tag: 'inferred' },
+      'Endurance strength': { value: '275 MPa', tag: 'inferred' }
+    },
+    LOADING: {
+      'Maximum stress': { value: '220 MPa', tag: 'stated' },
+      'Minimum stress': { value: '20 MPa', tag: 'stated' },
+      'Cycles': { value: '1e6', tag: 'stated' }
+    },
+    SIMULATION: {
+      'Type': { value: 'Goodman fatigue screening', tag: 'confirmed' },
+      'Solver': { value: 'Analytical material safety check', tag: 'confirmed' },
+      'Output': { value: 'Mean stress, alternating stress, utilization, safety factor', tag: 'confirmed' }
+    }
+  },
+  Power: {
+    SYSTEM_TYPE: 'Transformer Efficiency',
+    INPUT: {
+      'Primary voltage': { value: '240 V', tag: 'stated' },
+      'Secondary voltage': { value: '120 V', tag: 'stated' },
+      'Secondary current': { value: '10 A', tag: 'stated' }
+    },
+    PERFORMANCE: {
+      'Efficiency': { value: '95 %', tag: 'inferred' }
+    },
+    SIMULATION: {
+      'Type': { value: 'Steady power balance', tag: 'confirmed' },
+      'Solver': { value: 'Analytical transformer model', tag: 'confirmed' },
+      'Output': { value: 'Input power, output power, losses, current ratio', tag: 'confirmed' }
+    }
+  }
+};
+
+const SESSION_STATE_KEY = 'simforge_session_state';
+
+function loadSessionState() {
+  try {
+    return JSON.parse(sessionStorage.getItem(SESSION_STATE_KEY) || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function saveSessionStateSnapshot(snapshot) {
+  sessionStorage.setItem(SESSION_STATE_KEY, JSON.stringify(snapshot));
+}
+
+function createFreshMemoryData() {
+  // BUG FIX: createFreshMemoryData now returns an object with currentSessionId: null
+  // After handleGoHome, memory.currentSessionId was undefined instead of null,
+  // breaking all subsequent session lookups that used strict equality or optional chaining.
+  return {
+    projects: [{ id: 'proj-session', name: 'History' }],
+    currentProjectId: 'proj-session',
+    sessions: { 'proj-session': [] },
+    currentSessionId: null,
+    events: [],
+    preferences: {}
+  };
+}
+
+export default function App() {
+  // Landing page state
+  const [showLandingPage, setShowLandingPage] = useState(true);
+
+  // Toggle body class based on landing page state
+  useEffect(() => {
+    if (showLandingPage) {
+      document.body.classList.add('landing-page-active');
+      document.body.style.overflow = 'auto';
+      document.body.style.height = 'auto';
+    } else {
+      document.body.classList.remove('landing-page-active');
+      document.body.style.overflow = 'hidden';
+      document.body.style.height = '100vh';
+    }
+  }, [showLandingPage]);
+
+  // Load Project Memory Context
+  const [memory, setMemory] = useState(() => getMemoryData());
+  const [activeDomain, setActiveDomain] = useState('Circuits');
+  const [selectedLLM, setSelectedLLM] = useState('Groq');
+  
+  // Collapse sidebar state
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+
+  // Desktop viewport boundary check state
+  const [isTooNarrow, setIsTooNarrow] = useState(() => window.innerWidth < 960);
+
+  useEffect(() => {
+    const handleResize = () => {
+      setIsTooNarrow(window.innerWidth < 960);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+
+  // Active items
+  const currentProject = memory.projects.find(p => p.id === memory.currentProjectId) || memory.projects[0];
+  const activeSessionId = memory.currentSessionId;
+  const projectSessions = memory.sessions[currentProject.id] || [];
+  const activeSession = projectSessions.find(s => s.id === activeSessionId) || null;
+
+  // UI Overlays toggles
+  const [memoryOpen, setMemoryOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [paletteOpen, setPaletteOpen] = useState(false);
+  const [validationOpen, setValidationOpen] = useState(false);
+  const [showOnboarding, setShowOnboarding] = useState(() => {
+    const data = getMemoryData();
+    const sessions = data.sessions?.[data.currentProjectId] || [];
+    return sessions.length === 0;
+  });
+
+  // Chat thread messages
+  // Stored in local state per session ID to allow seamless switching
+  const loadedSessionState = loadSessionState();
+  const [sessionMessages, setSessionMessages] = useState(loadedSessionState.sessionMessages || {});
+  const [sessionModels, setSessionModels] = useState(loadedSessionState.sessionModels || {});
+  const [sessionResults, setSessionResults] = useState(loadedSessionState.sessionResults || {});
+  const [modelStates, setModelStates] = useState(loadedSessionState.modelStates || {});
+  const [resultsStates, setResultsStates] = useState(loadedSessionState.resultsStates || {});
+  const [runHistories, setRunHistories] = useState(loadedSessionState.runHistories || {});
+  
+  // Brain architecture state
+  const [sessionSchematics, setSessionSchematics] = useState({});
+  const [sessionSVGPlots, setSessionSVGPlots] = useState({});
+  const [sessionRollingSummaries, setSessionRollingSummaries] = useState({});
+  
+  const liveUpdateMessageTimer = useRef(null);
+
+  // Active solver run state
+  const [solverStatus, setSolverStatus] = useState({ name: 'ngspice', state: 'idle' });
+  const [solverProgress, setSolverProgress] = useState(null);
+  const [activeSolverInstance, setActiveSolverInstance] = useState(null);
+
+  // Undo history stack for parameter edits
+  const [undoStack, setUndoStack] = useState([]);
+
+  // Live Simulator Playground state
+  const [livePlaygroundActive, setLivePlaygroundActive] = useState(true); // default true for high wow factor!
+
+  // TRIZ variables
+  const [trizContradiction, setTrizContradiction] = useState(null);
+  const [trizWizardActive, setTrizWizardActive] = useState(false);
+  const [trizBaselines, setTrizBaselines] = useState({});
+  const [activeFlowPlans, setActiveFlowPlans] = useState({});
+
+  // Clarification questions list
+  const [clarificationQueue, setClarificationQueue] = useState([]);
+
+  // Helper to fetch session specific data
+  const getActiveMessages = () => sessionMessages[activeSessionId] || [];
+  const getActiveModel = () => sessionModels[activeSessionId] || null;
+  const getActiveResults = () => sessionResults[activeSessionId] || null;
+  const getActiveModelState = () => modelStates[activeSessionId] || 'empty';
+  const getActiveResultsState = () => resultsStates[activeSessionId] || 'empty';
+  const getActiveHistory = () => runHistories[activeSessionId] || [];
+  const getActiveSchematicSVG = () => sessionSchematics[activeSessionId] || null;
+  const getActiveSVGPlots = () => sessionSVGPlots[activeSessionId] || [];
+
+  useEffect(() => {
+    saveSessionStateSnapshot({
+      sessionMessages,
+      sessionModels,
+      sessionResults,
+      modelStates,
+      resultsStates,
+      runHistories
+    });
+  }, [sessionMessages, sessionModels, sessionResults, modelStates, resultsStates, runHistories]);
+
+  // Write updates to LocalStorage memory
+  const updateMemoryState = (updatedMemory) => {
+    setMemory(updatedMemory);
+    saveMemoryData(updatedMemory);
+  };
+
+
+
+  // Initial loading effect - only set domain on first load, not on every session switch
+  // BUG FIX: This was causing domain to be reset when switching sessions, which could
+  // trigger re-processing of messages. Now we only set domain if it's different from current.
+  useEffect(() => {
+    if (activeSession && activeSession.domain !== activeDomain) {
+      setActiveDomain(activeSession.domain);
+    }
+  }, [activeSessionId, activeSession?.domain, activeDomain]);
+
+  // Save session messages
+  const updateSessionMessages = (sessId, msgs) => {
+    setSessionMessages(prev => ({ ...prev, [sessId]: msgs }));
+  };
+
+  const appendSessionMessage = (sessId, msg) => {
+    setSessionMessages(prev => ({
+      ...prev,
+      [sessId]: [...(prev[sessId] || []), msg]
+    }));
+  };
+
+  const summarizeModelForChat = (domain, model) => {
+    if (!model) return 'model parameters are ready';
+    if (domain === 'Physics') {
+      const problem = model.PROBLEM?.['Problem type']?.value || model.SYSTEM_TYPE || 'mechanics';
+      return `${problem}, m1 ${model.MASSES?.['Mass m1']?.value}, m2 ${model.MASSES?.['Mass m2']?.value}, μ ${model.CONTACT?.['Coefficient of friction']?.value}, k ${model.SPRING?.['Spring constant']?.value || 'not used'}`;
+    }
+    if (domain === 'Structural') {
+      return `Length ${model.GEOMETRY?.Length?.value}, width ${model.GEOMETRY?.Width?.value}, height ${model.GEOMETRY?.Height?.value}, load ${model.LOADING?.Magnitude?.value}`;
+    }
+    if (domain === 'Circuits') {
+      if (model.SYSTEM_TYPE === 'Voltage Divider') {
+        return `Vin ${model.INPUT?.['Supply voltage']?.value || model.INPUT?.['Input voltage']?.value}, target ${model.OUTPUT?.['Target voltage']?.value}, R1 ${model.COMPONENTS?.['Top resistor (R1)']?.value}, R2 ${model.COMPONENTS?.['Bottom resistor (R2)']?.value}`;
+      }
+      return `Vin ${model.INPUT?.['Supply voltage']?.value}, load ${model.OUTPUT?.['Load current']?.value}, L ${model.COMPONENTS?.['Inductor (L1)']?.value}, C ${model.COMPONENTS?.['Capacitor (C1)']?.value}`;
+    }
+    if (domain === 'Fluids') {
+      return `Diameter ${model.GEOMETRY?.Diameter?.value}, inlet velocity ${model.BOUNDARY_CONDITIONS?.['Inlet velocity']?.value}`;
+    }
+    if (domain === 'Semiconductors') {
+      return `Gate length ${model.GEOMETRY?.['Gate Length']?.value}, width ${model.GEOMETRY?.Width?.value}, gate voltage ${model.BIASING?.['Gate Voltage']?.value}`;
+    }
+    if (domain === 'Aerospace') {
+      return `Throat ${model.GEOMETRY?.['Throat Diameter']?.value}, expansion ratio ${model.GEOMETRY?.['Expansion ratio']?.value}, chamber pressure ${model.PROPULSION?.['Chamber Pressure']?.value}`;
+    }
+    if (domain === 'Thermal') {
+      return `Power ${model.HEAT_LOAD?.['Power dissipation']?.value}, ambient ${model.TEMPERATURES?.['Ambient temperature']?.value}, max junction ${model.TEMPERATURES?.['Maximum junction temperature']?.value}`;
+    }
+    if (domain === 'Control') {
+      return `Plant ${model.PLANT?.['Transfer function']?.value}, settling ${model.REQUIREMENTS?.['Settling time']?.value}, overshoot ${model.REQUIREMENTS?.['Maximum overshoot']?.value}`;
+    }
+    if (domain === 'Materials') {
+      return `Material ${model.MATERIAL?.Material?.value}, max stress ${model.LOADING?.['Maximum stress']?.value}, min stress ${model.LOADING?.['Minimum stress']?.value}`;
+    }
+    if (domain === 'Power') {
+      return `Primary ${model.INPUT?.['Primary voltage']?.value}, secondary ${model.INPUT?.['Secondary voltage']?.value}, load ${model.INPUT?.['Secondary current']?.value}`;
+    }
+    return 'model parameters are ready';
+  };
+
+  // Save session model parameter fields
+  const updateSessionModel = (sessId, model) => {
+    setSessionModels(prev => ({ ...prev, [sessId]: model }));
+  };
+
+  const updateSessionResults = (sessId, res) => {
+    setSessionResults(prev => ({ ...prev, [sessId]: res }));
+  };
+
+  const updateModelState = (sessId, st) => {
+    setModelStates(prev => ({ ...prev, [sessId]: st }));
+  };
+
+  const updateResultsState = (sessId, st) => {
+    setResultsStates(prev => ({ ...prev, [sessId]: st }));
+  };
+
+  // SWITCH SESSIONS
+  const handleSelectSession = (id) => {
+    const updated = { ...memory, currentSessionId: id };
+    const targetSession = projectSessions.find(s => s.id === id);
+    if (targetSession) {
+      setActiveDomain(targetSession.domain);
+    }
+    updateMemoryState(updated);
+  };
+
+  // NEW SESSION
+  const handleNewSession = (domainName = activeDomain, initialTitle = null) => {
+    const sessId = `sess-${Date.now()}`;
+    const timestamp = formatTimestamp(new Date());
+    const newSess = {
+      id: sessId,
+      title: initialTitle || `${domainName} Session — ${timestamp.split(' · ')[1]}`,
+      domain: domainName,
+      timestamp
+    };
+
+    const updatedSessions = {
+      ...memory.sessions,
+      [currentProject.id]: [newSess, ...(memory.sessions[currentProject.id] || [])]
+    };
+
+    const updated = {
+      ...memory,
+      sessions: updatedSessions,
+      currentSessionId: sessId
+    };
+
+    updateMemoryState(updated);
+    
+    // Initialize session states
+    updateSessionMessages(sessId, []);
+    updateModelState(sessId, 'empty');
+    updateResultsState(sessId, 'empty');
+    // BUG FIX: Initialize model to null instead of DEFAULT_MODELS to avoid showing default schematic/formulated content
+    updateSessionModel(sessId, null);
+
+    return sessId;
+  };
+
+  // SWITCH DOMAINS
+  const handleSwitchDomain = (dName) => {
+    setActiveDomain(dName);
+    // Find if there is an active session of that domain, else create a new one
+    const matchingSession = projectSessions.find(s => s.domain === dName);
+    if (matchingSession) {
+      handleSelectSession(matchingSession.id);
+    } else {
+      handleNewSession(dName);
+    }
+  };
+
+  // SWITCH PROJECTS
+  const handleSwitchProject = (id) => {
+    const updated = { ...memory, currentProjectId: id };
+    const pSessions = memory.sessions[id] || [];
+    if (pSessions.length > 0) {
+      updated.currentSessionId = pSessions[0].id;
+      setActiveDomain(pSessions[0].domain);
+    } else {
+      // Create new session in new project
+      const sessId = `sess-${Date.now()}`;
+      const newS = { id: sessId, title: 'Initial circuits simulation', domain: 'Circuits', timestamp: formatTimestamp(new Date()) };
+      updated.sessions[id] = [newS];
+      updated.currentSessionId = sessId;
+      setActiveDomain('Circuits');
+    }
+    updateMemoryState(updated);
+  };
+
+  // NEW PROJECT
+  const handleNewProject = () => {
+    const name = prompt("Enter project name:");
+    if (!name) return;
+    const projId = `proj-${Date.now()}`;
+    const newProj = { id: projId, name };
+
+    const updatedProjects = [...memory.projects, newProj];
+    const updated = {
+      ...memory,
+      projects: updatedProjects,
+      currentProjectId: projId
+    };
+    updateMemoryState(updated);
+    handleSwitchProject(projId);
+  };
+
+  // CHAT INPUT SUBMIT OR SUGGESTION CHIPS
+  const handleSendMessage = async (text) => {
+    // Step 1: Check if user is answering a clarification question
+    if (clarificationQueue.length > 0) {
+      handleClarifyAnswer(clarificationQueue[0].id, text);
+      return;
+    }
+
+    // Step 2: Show user message immediately (zero latency)
+    const userMsg = { 
+      id: `m-${Date.now()}-user`, 
+      sender: 'user', 
+      text, 
+      timestamp: formatTimestamp(new Date()) 
+    };
+    
+    let targetSessionId = activeSessionId;
+    appendSessionMessage(targetSessionId, userMsg);
+
+    // Step 3: Build session context (bounded, never grows)
+    const allMessages = sessionMessages[targetSessionId] || [];
+    const sessionContext = {
+      domain: activeDomain,
+      rolling_summary: sessionRollingSummaries[targetSessionId] || '',
+      recent_turns: allMessages.slice(-6).map(m => ({    // last 3 exchanges
+        role: m.sender === 'ai' ? 'assistant' : 'user',
+        content: m.text
+      })),
+      model_state_summary: getCurrentModelStateSummary(sessionModels[targetSessionId]),
+      has_results: Boolean(sessionResults[targetSessionId])
+    };
+
+    // Step 4: Run brain (1 LLM call + N local tool calls)
+    const toolContext = {
+      DEFAULT_MODELS,
+      currentModel: sessionModels[targetSessionId],
+      messageHistory: allMessages
+    };
+    
+    let brainOutput;
+    try {
+      brainOutput = await runBrainWithTools(text, sessionContext, toolContext, selectedLLM === 'Groq' ? 'groq' : 'claude');
+    } catch (err) {
+      console.error('Brain execution failed:', err);
+      brainOutput = {
+        domain: activeDomain,
+        system_type: null,
+        patches: [],
+        run_solver: false,
+        response_text: `*(Brain error: ${err.message})*\n\nSomething went wrong with the AI brain. Please try rephrasing your question.`,
+        missing_parameters: [],
+        confidence: 0.3,
+        rendering: { tier: '1', reason: "Error fallback" },
+        svg_output: null,
+        svg_plots: []
+      };
+    }
+
+    // Handle casual chat responses from unified brain
+    if (decision.domain === 'casual' || decision.actions.explain_only) {
+      const activeMsgList = sessionMessages[activeSessionId] || [];
+      const newUserMsg = { id: `m-${Date.now()}-user`, sender: 'user', text, timestamp: formatTimestamp(new Date()) };
+      const aiMsg = {
+        id: `m-${Date.now()}-ai`,
+        sender: 'ai',
+        text: decision.canonical_form || `I understand: "${text}". How can I help with your engineering work?`,
+        timestamp: formatTimestamp(new Date()),
+        animated: true
+      };
+      updateSessionMessages(activeSessionId, [...activeMsgList, newUserMsg, aiMsg]);
+      return;
+    }
+
+    // Handle unknown domain
+    if (decision.domain === 'Default' || !decision.domain) {
+      const activeMsgList = sessionMessages[activeSessionId] || [];
+      const newUserMsg = { id: `m-${Date.now()}-user`, sender: 'user', text, timestamp: formatTimestamp(new Date()) };
+      const aiMsg = {
+        id: `m-${Date.now()}-ai`,
+        sender: 'ai',
+        text: `I’m in Auto Detect mode. I can route this once I see a clearer engineering signal: circuit values, beam/load geometry, heat/temperature data, wing/nozzle terms, PID specs, material strengths, or power-system ratings.\n\nTry something like: “Design a voltage divider from 12V to 5V” or “Size a heat sink for 25W, 75C max, 25C ambient.”`,
+        timestamp: formatTimestamp(new Date()),
+        animated: true
+      };
+      updateSessionMessages(activeSessionId, [...activeMsgList, newUserMsg, aiMsg]);
+      return;
+    }
+
+    // Domain switch handling
+    let targetSessionId = activeSessionId;
+    if (decision.domain !== activeDomain) {
+      setActiveDomain(decision.domain);
+      targetSessionId = handleNewSession(decision.domain, `System prompt formulation`);
+      setSessionMessages(prev => ({ ...prev, [targetSessionId]: prev[targetSessionId] || [] }));
+    }
+
+    // Add user message
+    const activeMsgList = sessionMessages[targetSessionId] || [];
+    const newUserMsg = { id: `m-${Date.now()}-user`, sender: 'user', text, timestamp: formatTimestamp(new Date()) };
+    const nextMsgs = [...activeMsgList, newUserMsg];
+    updateSessionMessages(targetSessionId, nextMsgs);
+
+    // Store decision in session model for reference
+    setSessionModels(prev => ({
+      ...prev,
+      [targetSessionId]: {
+        ...(prev[targetSessionId] || {}),
+        _brain_decision: decision
+      }
+    }));
+
+    // Execute the decision mechanically
+    if (decision.actions.formulate || decision.actions.update_model) {
+      processFormulationFromDecision(decision, targetSessionId, nextMsgs);
+    } else if (decision.actions.run_solver) {
+      handleRunSimulation();
+    }
+  };
+
+  // PROCESS FORMULATION FROM UNIFIED BRAIN DECISION
+  const processFormulationFromDecision = (decision, sessId, messageHistory) => {
+    updateModelState(sessId, 'formulating');
+    
+    setTimeout(async () => {
+      const activeModel = sessionModels[sessId] || JSON.parse(JSON.stringify(DEFAULT_MODELS[decision.domain]));
+      let updatedModel = { ...activeModel };
+
+      // Apply parameters from brain decision
+      if (decision.parameters && decision.parameters.length > 0) {
+        decision.parameters.forEach(param => {
+          if (param.category && updatedModel[param.category]) {
+            updatedModel[param.category][param.name] = {
+              value: param.value,
+              unit: param.unit,
+              tag: param.source === 'implicit' ? 'inferred' : 'confirmed'
+            };
+          }
+        });
+      }
+
+      // Set SYSTEM_TYPE from decision
+      if (decision.system_type) {
+        updatedModel.SYSTEM_TYPE = decision.system_type;
+      }
+
+      // Store updated model
+      updateSessionModel(sessId, updatedModel);
+      updateModelState(sessId, 'confirmation');
+
+      // Add AI response about what was formulated
+      const formulationMsg = {
+        id: `m-${Date.now()}-ai`,
+        sender: 'ai',
+        text: decision.canonical_form || `I've formulated a ${decision.system_type || decision.domain} model based on your question.`,
+        timestamp: formatTimestamp(new Date()),
+        animated: true
+      };
+
+      // Add missing parameters warning if any
+      if (decision.missing_parameters && decision.missing_parameters.length > 0) {
+        formulationMsg.text += `\n\n**Missing information:** ${decision.missing_parameters.join(', ')}`;
+      }
+
+      // Add ambiguities warning if any
+      if (decision.ambiguities && decision.ambiguities.length > 0) {
+        formulationMsg.text += `\n\n**Ambiguities:** ${decision.ambiguities.join(', ')}`;
+      }
+
+      updateSessionMessages(sessId, [...messageHistory, formulationMsg]);
+    }, 100);
+  };
+
+  // PROCESS NLP SCHEMAS FORMULATION (LEGACY - kept for fallback)
+  const processFormulationNL = (promptText, domain, sessId = activeSessionId, messageHistoryOverride = null, workflowPlan = null, parsedQuestion = null) => {
+    // Stage progress bar
+    updateModelState(sessId, 'formulating');
+    
+    setTimeout(async () => {
+      const activeModel = sessionModels[sessId] || JSON.parse(JSON.stringify(DEFAULT_MODELS[domain]));
+      let updatedModel = applyNaturalLanguageUpdates(activeModel, domain, promptText);
+      if (updatedModel.SYSTEM_TYPE === 'Voltage Divider' && updatedModel.INPUT?.['Input voltage']) {
+        if (!updatedModel.INPUT['Supply voltage']) {
+          updatedModel.INPUT['Supply voltage'] = updatedModel.INPUT['Input voltage'];
+        }
+        delete updatedModel.INPUT['Input voltage'];
+      }
+      
+      const lower = promptText.toLowerCase();
+
+      // Look up external component registries (connectors)
+      const lookupResult = detectAllLookups(promptText);
+      let connectorTag = '';
+      let connectorFields = {};
+
+      if (lookupResult) {
+        connectorTag = lookupResult.type === 'datasheet' ? 'from datasheet' : 'from material DB';
+        connectorFields = lookupResult.data.fields;
+        
+        // Log connector event in project memory
+        logMemoryEvent(
+          currentProject.id, 
+          sessId, 
+          'model_confirmed', 
+          `Auto-populated ${lookupResult.data.name} from connector DB.`,
+          connectorFields
+        );
+      }
+
+      // Apply external lookup if any (connector databases)
+      if (connectorTag) {
+        if (domain === 'Circuits') {
+          Object.entries(connectorFields).forEach(([k, v]) => {
+            if (updatedModel.COMPONENTS[k]) {
+              updatedModel.COMPONENTS[k] = { value: v, tag: connectorTag };
+            } else if (updatedModel.INPUT[k]) {
+              updatedModel.INPUT[k] = { value: v, tag: connectorTag };
+            }
+          });
+        } else if (domain === 'Structural') {
+          Object.entries(connectorFields).forEach(([k, v]) => {
+            if (updatedModel.MATERIAL?.[k]) {
+              updatedModel.MATERIAL[k] = { value: v, tag: connectorTag };
+            }
+          });
+        } else if (domain === 'Fluids') {
+          Object.entries(connectorFields).forEach(([k, v]) => {
+            if (updatedModel.FLUID?.[k]) {
+              updatedModel.FLUID[k] = { value: v, tag: connectorTag };
+            }
+          });
+        }
+      }
+
+      // BUG FIX: Removed hardcoded parameter extraction (lines 692-775)
+      // These brittle checks like `lower.includes('2a')` only worked for specific values
+      // and didn't scale to arbitrary questions. Parameter extraction is now handled
+      // by AI Layer 1B (Question Parser) and applyNaturalLanguageUpdates in chatOrchestrator.js,
+      // which uses generic regex patterns and AI reasoning to extract parameters correctly.
+
+      const contradictionMatched = detectContradiction(promptText, domain);
+      const flowPlan = createFlowPlan({
+        promptText,
+        domain,
+        hasModel: Boolean(sessionModels[sessId]),
+        mode: selectedLLM === 'Groq' ? 'Engineer' : selectedLLM,
+        model: updatedModel
+      });
+      const flowModel = attachFlowMetadata(updatedModel, flowPlan);
+      setActiveFlowPlans(prev => ({ ...prev, [sessId]: flowPlan }));
+
+      // AI LAYER 3B: Model-Question Alignment Checker
+      // Validate that the created model faithfully represents the original question
+      let alignmentCheck = { alignment_status: 'MATCH' };
+      if (parsedQuestion) {
+        try {
+          alignmentCheck = await checkModelQuestionAlignment(promptText, flowModel, parsedQuestion);
+          
+          if (alignmentCheck.alignment_status === 'REJECT' || alignmentCheck.alignment_status === 'MISMATCH_DETECTED') {
+            // Log alignment failure
+            logMemoryEvent(
+              currentProject.id,
+              sessId,
+              'model_alignment_failed',
+              `Model-question alignment check failed: ${alignmentCheck.recommendation}`,
+              { mismatches: alignmentCheck.mismatches, missing: alignmentCheck.missing_parameters }
+            );
+            
+            // Add warning message to chat
+            const warningMsg = {
+              id: `m-${Date.now()}-ai`,
+              sender: 'ai',
+              text: `⚠️ Model-Question Alignment Check Failed\n\n${alignmentCheck.mismatches.map(m => `- ${m.field}: ${m.explanation}`).join('\n')}\n\nRecommendation: ${alignmentCheck.recommendation}`,
+              timestamp: formatTimestamp(new Date())
+            };
+            const currentMsgs = sessionMessages[sessId] || [];
+            updateSessionMessages(sessId, [...currentMsgs, warningMsg]);
+          }
+        } catch (err) {
+          console.warn('AI Layer 3B failed, proceeding without alignment check:', err);
+        }
+      }
+
+      // AI LAYER 4B: Physical Plausibility Guardrails
+      // Validate that model parameters are physically plausible
+      let plausibilityCheck = { plausibility_status: 'PASS' };
+      try {
+        plausibilityCheck = await checkPhysicalPlausibility(flowModel, domain);
+        
+        if (plausibilityCheck.plausibility_status === 'FAIL' || plausibilityCheck.plausibility_status === 'WARNING') {
+          // Log plausibility failure
+          logMemoryEvent(
+            currentProject.id,
+            sessId,
+            'physical_plausibility_failed',
+            `Physical plausibility check failed: ${plausibilityCheck.recommendation}`,
+            { issues: plausibilityCheck.issues }
+          );
+          
+          // Add warning message to chat
+          const warningMsg = {
+            id: `m-${Date.now()}-ai`,
+            sender: 'ai',
+            text: `⚠️ Physical Plausibility Check ${plausibilityCheck.plausibility_status}\n\n${plausibilityCheck.issues.map(i => `- ${i.field}: ${i.explanation}`).join('\n')}\n\nRecommendation: ${plausibilityCheck.recommendation}`,
+            timestamp: formatTimestamp(new Date())
+          };
+          const currentMsgs = sessionMessages[sessId] || [];
+          updateSessionMessages(sessId, [...currentMsgs, warningMsg]);
+        }
+      } catch (err) {
+        console.warn('AI Layer 4B failed, proceeding without plausibility check:', err);
+      }
+
+      // Store AI check results in model
+      flowModel._ai_checks = {
+        alignment: alignmentCheck,
+        plausibility: plausibilityCheck
+      };
+
+      // Complete formulation
+      updateSessionModel(sessId, flowModel);
+      updateModelState(sessId, 'confirmation');
+
+      const baseMessages = messageHistoryOverride || sessionMessages[sessId] || [];
+      const effectivePlan = workflowPlan || planChatWorkflow(promptText, domain, Boolean(sessionModels[sessId]));
+      if (effectivePlan.actions.updateModel) {
+        try {
+          const instantResults = runSolverInstant(domain, flowModel);
+          updateSessionResults(sessId, instantResults);
+          updateResultsState(sessId, 'results');
+          updateModelState(sessId, 'completed');
+        } catch (error) {
+          // BUG FIX: swallowed error now surfaced to the chat thread instead of
+          // silently failing and leaving the UI in a half-updated state.
+          console.error('Instant chat-tune refresh failed', error);
+          appendSessionMessage(sessId, {
+            id: `m-${Date.now()}-ai`,
+            sender: 'ai',
+            text: `I updated the model but the instant preview hit a solver error: ${error.message}. You can still run the full simulation manually.`,
+            timestamp: formatTimestamp(new Date())
+          });
+        }
+      }
+      let brainText = formatEngineeringAnswer({
+        domain,
+        model: flowModel,
+        promptText,
+        flowPlan,
+        opening: getConversationalOpening(domain, flowModel, promptText)
+      });
+      const trizGuide = contradictionMatched
+        ? `\n\n**Design intuition**\nOne trade-off matters here: **${contradictionMatched.label}**. ${contradictionMatched.statement} I’ll keep that in mind as a design contradiction, not expose it as workflow machinery.`
+        : '';
+
+      try {
+        const brainResponse = await chatWithEngineeringBrain({
+          message: promptText,
+          domain,
+          provider: 'groq',
+          conversationHistory: baseMessages
+        });
+
+        if (brainResponse.success && brainResponse.message) {
+          brainText = normalizeBrainResponse(brainResponse.message, {
+            domain,
+            model: flowModel,
+            promptText,
+            flowPlan,
+            opening: getConversationalOpening(domain, flowModel, promptText),
+            fallback: brainText
+          }) + trizGuide;
+        } else {
+          brainText = `${brainText}\n\nI’ll still keep going with the deterministic solver, so you get numbers instead of a dead end.${brainResponse.suggestion ? `\n\n${brainResponse.suggestion}` : ''}${trizGuide}`;
+        }
+      } catch (error) {
+        brainText = `${brainText}\n\nThe live language backend is not reachable right now, but the local engineering solver can still calculate this.${trizGuide}`;
+      }
+
+      const aiResponse = {
+        id: `m-${Date.now()}-ai`,
+        sender: 'ai',
+        text: brainText,
+        timestamp: formatTimestamp(new Date()),
+        animated: true
+      };
+      updateSessionMessages(sessId, [...baseMessages, aiResponse]);
+
+      if (effectivePlan.actions.runSolver) {
+        runSimulationForSession(sessId, domain, flowModel, {
+          appendToMessages: [...baseMessages, aiResponse],
+          initiatedByChat: true
+        });
+      }
+
+      if (contradictionMatched) {
+        setTrizContradiction(contradictionMatched);
+      } else {
+        setTrizContradiction(null);
+      }
+
+    }, 1500);
+  };
+
+  // EDIT MESSAGE IN CHAT THREAD
+  const handleEditMessage = (msgId, newText) => {
+    const activeMsgList = getActiveMessages();
+    const msgIndex = activeMsgList.findIndex(m => m.id === msgId);
+    if (msgIndex === -1) return;
+
+    const updatedUserMsg = { ...activeMsgList[msgIndex], text: newText };
+    const nextMsgs = [...activeMsgList.slice(0, msgIndex), updatedUserMsg];
+    updateSessionMessages(activeSessionId, nextMsgs);
+
+    processFormulationNL(newText, activeDomain, activeSessionId, nextMsgs);
+  };
+
+  // RETRY MESSAGE IN CHAT THREAD
+  const handleRetryMessage = (msgId) => {
+    const activeMsgList = getActiveMessages();
+    const msgIndex = activeMsgList.findIndex(m => m.id === msgId);
+    if (msgIndex === -1) return;
+
+    const targetMsg = activeMsgList[msgIndex];
+    if (targetMsg.sender === 'user') {
+      const nextMsgs = activeMsgList.slice(0, msgIndex + 1);
+      updateSessionMessages(activeSessionId, nextMsgs);
+      processFormulationNL(targetMsg.text, activeDomain, activeSessionId, nextMsgs);
+    } else {
+      let userMsgIndex = -1;
+      for (let j = msgIndex - 1; j >= 0; j--) {
+        if (activeMsgList[j].sender === 'user') {
+          userMsgIndex = j;
+          break;
+        }
+      }
+      if (userMsgIndex !== -1) {
+        const userMsg = activeMsgList[userMsgIndex];
+        const nextMsgs = activeMsgList.slice(0, userMsgIndex + 1);
+        updateSessionMessages(activeSessionId, nextMsgs);
+        processFormulationNL(userMsg.text, activeDomain, activeSessionId, nextMsgs);
+      }
+    }
+  };
+
+  // HANDLE CLARIFY ANSWER CHIPS
+  const handleClarifyAnswer = (qId, selectedChip) => {
+    setClarificationQueue([]);
+    // Re-trigger formulation
+    const mergedText = `${getActiveMessages().map(m=>m.text).join(' ')} ${selectedChip}`;
+    processFormulationNL(mergedText, activeDomain);
+  };
+
+  // UPDATE FIELD PARAMETER VALUE
+  const handleUpdateField = (category, fieldName, value, tag) => {
+    const currentModel = getActiveModel();
+    if (!currentModel) return;
+
+    const previousValue = currentModel[category]?.[fieldName];
+    
+    // Save to undo stack
+    setUndoStack(prev => [...prev, { category, field: fieldName, oldValue: previousValue }]);
+
+    const updated = {
+      ...currentModel,
+      [category]: {
+        ...currentModel[category],
+        [fieldName]: { value, tag }
+      }
+    };
+
+    if (updated.SYSTEM_TYPE === 'Voltage Divider' && updated.INPUT) {
+      if (fieldName === 'Supply voltage' || fieldName === 'Input voltage') {
+        updated.INPUT['Supply voltage'] = { value, tag };
+      } else if (!updated.INPUT['Supply voltage'] && updated.INPUT['Input voltage']) {
+        updated.INPUT['Supply voltage'] = updated.INPUT['Input voltage'];
+      }
+      delete updated.INPUT['Input voltage'];
+    }
+
+    updateSessionModel(activeSessionId, updated);
+
+    try {
+      const results = runSolverInstant(activeDomain, updated);
+      updateSessionResults(activeSessionId, results);
+      updateModelState(activeSessionId, 'completed');
+      updateResultsState(activeSessionId, 'results');
+
+      if (liveUpdateMessageTimer.current) {
+        clearTimeout(liveUpdateMessageTimer.current);
+      }
+      liveUpdateMessageTimer.current = setTimeout(() => {
+        const oldValue = previousValue?.value ?? previousValue ?? 'not set';
+        appendSessionMessage(activeSessionId, {
+          id: `m-${Date.now()}-ai`,
+          sender: 'ai',
+          text: `Got it. I changed **${fieldName}** from **${oldValue}** to **${value}** and recalculated the result.\n\nThe Formulated Model, schematic, and results are now using the same updated values. ${results?.plain_summary ? `\n\n${results.plain_summary}` : ''}`,
+          timestamp: formatTimestamp(new Date()),
+          animated: true
+        });
+      }, 650);
+    } catch (err) {
+      console.error("Instant Solver Error", err);
+      appendSessionMessage(activeSessionId, {
+        id: `m-${Date.now()}-ai`,
+        sender: 'ai',
+        text: `I updated ${fieldName}, but the downstream refresh hit a solver error: ${err.message}`,
+        timestamp: formatTimestamp(new Date()),
+        animated: true
+      });
+    }
+  };
+
+  const getSolverName = (domain, model = getActiveModel()) => {
+    return domain === 'Physics' ? 'Mechanics'
+      : domain === 'Circuits' ? 'ngspice'
+      : domain === 'Structural' ? 'CalculiX'
+      : domain === 'Fluids' ? 'OpenFOAM'
+      : domain === 'Semiconductors' ? 'SPICE'
+      : domain === 'Thermal' ? 'ThermalBudget'
+      : domain === 'Control' ? 'PIDDesigner'
+      : domain === 'Materials' ? 'MaterialCheck'
+      : domain === 'Power' ? 'PowerBalance'
+      : model?.SYSTEM_TYPE?.toLowerCase().includes('wing') ? 'LiftingLine'
+      : 'Isentropic1D';
+  };
+
+  const getRunDescription = (domain, confirmedModel) => {
+    if (domain === 'Physics') {
+      return `${confirmedModel.PROBLEM?.['Problem type']?.value || confirmedModel.SYSTEM_TYPE || 'Physics mechanics'}, m1=${confirmedModel.MASSES?.['Mass m1']?.value || '-'}, m2=${confirmedModel.MASSES?.['Mass m2']?.value || '-'}`;
+    }
+    if (domain === 'Circuits') {
+      if (confirmedModel.SYSTEM_TYPE === 'Voltage Divider') {
+        return `Divider ${confirmedModel.INPUT?.['Supply voltage']?.value || confirmedModel.INPUT?.['Input voltage']?.value || 'Vin'} -> ${confirmedModel.OUTPUT?.['Target voltage']?.value || 'Vout'}, R1=${confirmedModel.COMPONENTS?.['Top resistor (R1)']?.value || '-'}, R2=${confirmedModel.COMPONENTS?.['Bottom resistor (R2)']?.value || '-'}`;
+      }
+      return `L1=${confirmedModel.COMPONENTS?.['Inductor (L1)']?.value || '-'}, C1=${confirmedModel.COMPONENTS?.['Capacitor (C1)']?.value || '-'}`;
+    }
+    if (domain === 'Structural') {
+      return `Beam L=${confirmedModel.GEOMETRY?.['Length']?.value || '-'}, F=${confirmedModel.LOADING?.['Magnitude']?.value || '-'}`;
+    }
+    if (domain === 'Fluids') {
+      return `Diameter=${confirmedModel.GEOMETRY?.['Diameter']?.value || '-'}`;
+    }
+    if (domain === 'Semiconductors') {
+      return `L_gate=${confirmedModel.GEOMETRY?.['Gate Length']?.value || '-'}, W=${confirmedModel.GEOMETRY?.['Width']?.value || '-'}`;
+    }
+    if (domain === 'Aerospace') {
+      if (confirmedModel.SYSTEM_TYPE?.toLowerCase().includes('wing')) {
+        return `Wing b=${confirmedModel.GEOMETRY?.['Wingspan']?.value || '-'}, c=${confirmedModel.GEOMETRY?.['Chord']?.value || '-'}, AoA=${confirmedModel.FLIGHT_CONDITIONS?.['Angle of attack']?.value || '-'}`;
+      }
+      return `Dt=${confirmedModel.GEOMETRY?.['Throat Diameter']?.value || '-'}, Expansion=${confirmedModel.GEOMETRY?.['Expansion ratio']?.value || '-'}`;
+    }
+    if (domain === 'Thermal') {
+      return `Q=${confirmedModel.HEAT_LOAD?.['Power dissipation']?.value || '-'}, Tj,max=${confirmedModel.TEMPERATURES?.['Maximum junction temperature']?.value || '-'}`;
+    }
+    if (domain === 'Control') {
+      return `Plant=${confirmedModel.PLANT?.['Transfer function']?.value || '-'}, Ts=${confirmedModel.REQUIREMENTS?.['Settling time']?.value || '-'}`;
+    }
+    if (domain === 'Materials') {
+      return `Stress ${confirmedModel.LOADING?.['Minimum stress']?.value || '-'} to ${confirmedModel.LOADING?.['Maximum stress']?.value || '-'}`;
+    }
+    if (domain === 'Power') {
+      return `V1=${confirmedModel.INPUT?.['Primary voltage']?.value || '-'}, V2=${confirmedModel.INPUT?.['Secondary voltage']?.value || '-'}, I2=${confirmedModel.INPUT?.['Secondary current']?.value || '-'}`;
+    }
+    return domain;
+  };
+
+  const getConversationalOpening = (domain, model, promptText = '') => {
+    const systemType = String(model?.SYSTEM_TYPE || '').toLowerCase();
+    if (domain === 'Physics') {
+      if (systemType.includes('spring')) {
+        return `Nice physics mechanics problem. Since a spring is involved, I’ll treat it as SHM about equilibrium instead of pretending the acceleration stays constant.`;
+      }
+      if (systemType.includes('inclined')) {
+        return `Good inclined-plane mechanics problem. I’ll resolve forces along the slope, include friction, and then compute the motion.`;
+      }
+      return `Good mechanics problem. I’ll build the free-body equations first, then calculate the motion from the actual force balance.`;
+    }
+    if (domain === 'Structural' && (systemType.includes('pulley') || systemType.includes('block'))) {
+      if (systemType.includes('inclined')) {
+        return `Great inclined-plane pulley problem. I can see Block A on the slope and Block B hanging from the pulley, so I’ll resolve the forces along the incline before calculating the motion.`;
+      }
+      return `Great pulley problem. I can see the setup: one mass on a rough table, another mass hanging over a pulley. Let me solve it carefully and keep the free-body logic tied to the numbers.`;
+    }
+    if (domain === 'Circuits' && model?.SYSTEM_TYPE === 'Voltage Divider') {
+      return `Nice, this is a voltage-divider design. Let me choose practical resistor values, then we’ll check the actual output voltage and current draw.`;
+    }
+    if (domain === 'Circuits') {
+      return `Got it, this is a circuits problem. I’ll turn your values into a model, run the electrical calculation, and show the result in plain language.`;
+    }
+    if (domain === 'Structural') {
+      return `Got it, this is a structural mechanics problem. I’ll pull out the geometry, loading, and material assumptions, then check the important response values.`;
+    }
+    if (domain === 'Aerospace' && (systemType.includes('wing') || /wing|airfoil|lift/i.test(promptText))) {
+      return `Good aerospace sizing question. I’ll estimate the finite-wing lift behavior first, then connect that to total lift and induced drag.`;
+    }
+    if (domain === 'Thermal') {
+      return `Good thermal-design problem. I’ll build the heat-flow path and check whether the thermal resistance budget actually works.`;
+    }
+    if (domain === 'Control') {
+      return `Good control problem. I’ll translate the response specs into damping and frequency targets, then tune the controller from there.`;
+    }
+    if (domain === 'Materials') {
+      return `Good materials check. I’ll compare the stress cycle against the material strength limits so the safety factor is easy to interpret.`;
+    }
+    if (domain === 'Power') {
+      return `Good power-systems calculation. I’ll follow the power flow from input to output and account for losses clearly.`;
+    }
+    return `Got it. I’ll turn your question into the right engineering model and walk through the result clearly.`;
+  };
+
+  const formatEngineeringAnswer = ({ domain, model, promptText, flowPlan, opening }) => {
+    const guard = flowPlan?.guardrails;
+    const contradiction = flowPlan?.contradictions_detected?.[0];
+    const mathLine = getMathematicsLine(domain, model);
+    const guardLine = guard?.severity === 'error'
+      ? `I found a setup issue that needs correction before a reliable solve: ${guard.recommendations.join(' ')}`
+      : guard?.severity === 'warning'
+        ? `I can proceed, but I’ll treat these as assumptions: ${guard.recommendations.join(' ')}`
+        : 'The model is ready for a first-pass solve with the assumptions shown in the model pane.';
+    const intuition = contradiction
+      ? `${contradiction.property_a} conflicts with ${contradiction.property_b}. The design task is to improve one side without damaging the other.`
+      : getDomainIntuition(domain, model, promptText);
+
+    const safeOpening = opening || getConversationalOpening(domain, model, promptText);
+    return `**Problem description**\n${safeOpening}\n\nI translated your request into a ${domain.toLowerCase()} model and filled the editable model pane with the values and assumptions I can infer.\n\n**Mathematics**\n${mathLine}\n\n**Intuition**\n${intuition}\n\n**Conclusion**\n${guardLine}`;
+  };
+
+  const normalizeBrainResponse = (message, context) => {
+    const text = String(message || '').trim();
+    if (/mindmap|Current Routing|Stage\s+\d|SimForge 13-Layer/i.test(text)) {
+      return context.fallback;
+    }
+    if (/\*\*Problem description\*\*/i.test(text) && /\*\*Mathematics\*\*/i.test(text)) {
+      return text;
+    }
+    return `${formatEngineeringAnswer(context)}\n\n${text}`;
+  };
+
+  const formatResultAnswer = ({ domain, model, results, summary, solverName, comparisonText, iterationText }) => {
+    return `**Problem description**\nI ran the ${domain.toLowerCase()} model with **${solverName}** and parsed the result back into SimForge.\n\n**Mathematics**\n${getResultMathematicsLine(results)}\n\n**Intuition**\n${summary}\n\n${comparisonText || `**Conclusion**\nThe result is now reflected in the plots, metrics, and model history.`}${iterationText || ''}`;
+  };
+
+  const getMathematicsLine = (domain, model) => {
+    if (domain === 'Circuits' && model?.SYSTEM_TYPE === 'Voltage Divider') {
+      return `Voltage divider relation: Vout = Vin * R2 / (R1 + R2).`;
+    }
+    if (domain === 'Circuits') {
+      return `Circuit solve uses the generated SPICE-style deck and extracts voltage/current metrics from the operating point or transient result.`;
+    }
+    if (domain === 'Structural') {
+      return `Structural first pass checks stress, deflection, and safety from geometry, material stiffness, and load. For beam-like cases, bending scales roughly with M*c/I.`;
+    }
+    if (domain === 'Fluids') {
+      return `Fluid solve uses boundary velocity, geometry, viscosity, and pressure correction to estimate flow behavior.`;
+    }
+    if (domain === 'Aerospace') {
+      return `Aerospace solve maps geometry and flight condition into lift, drag, Mach, or pressure relations depending on the model.`;
+    }
+    if (domain === 'Thermal') {
+      return `Thermal solve follows heat flow: temperature rise is driven by power times effective thermal resistance.`;
+    }
+    if (domain === 'Control') {
+      return `Control solve forms the closed-loop transfer function and evaluates step-response metrics such as settling time and overshoot.`;
+    }
+    if (domain === 'Power') {
+      return `Power solve balances voltage, current, load, transformer/network parameters, and loss terms.`;
+    }
+    return `The solver uses the structured model fields as equations, parameters, and boundary conditions.`;
+  };
+
+  const getResultMathematicsLine = (results) => {
+    const metrics = results?.metrics || [];
+    if (!metrics.length) return 'The solver completed, but no scalar metric list was returned for this run.';
+    return metrics.slice(0, 5).map(metric => `${metric.name}: ${metric.value}`).join('\n');
+  };
+
+  const getDomainIntuition = (domain, model, promptText) => {
+    if (domain === 'Structural') return 'Material farther from the neutral axis is usually more valuable for bending stiffness than material near the center.';
+    if (domain === 'Circuits') return 'The circuit behavior is controlled by ratios, impedance, and dynamic energy storage, not just individual component values.';
+    if (domain === 'Fluids') return 'Flow results are highly sensitive to boundary conditions, geometry, and whether the regime is laminar or turbulent.';
+    if (domain === 'Aerospace') return 'Small changes in angle, airfoil shape, or speed can move lift and drag together, so trade-offs matter.';
+    if (domain === 'Thermal') return 'Heat wants a low-resistance path to ambient; bottlenecks dominate the final temperature.';
+    if (domain === 'Control') return 'Faster response usually competes with overshoot, robustness, or actuator effort.';
+    return promptText ? 'I’m keeping the physical assumptions visible so the result stays tied to the actual question.' : 'The intuition comes from the dominant constraint in the model.';
+  };
+
+  const getConversationalResultSummary = (domain, model, results) => {
+    const systemType = String(model?.SYSTEM_TYPE || '').toLowerCase();
+    if (domain === 'Physics') {
+      const diagramStatus = results?.visualization_capability?.diagram_status;
+      const vizNote = diagramStatus === 'fully_rendered'
+        ? 'The schematic/diagram layer has a registered renderer for this problem type.'
+        : 'The calculation is complete; the diagram layer will show a transparent fallback if the dedicated template is not ready.';
+      return `Here’s the mechanics result:\n\n${results.plain_summary}\n\n${vizNote}`;
+    }
+    if (domain === 'Structural' && (systemType.includes('pulley') || systemType.includes('block'))) {
+      if (systemType.includes('inclined')) {
+        return `Here’s what I found for your inclined-plane pulley system:\n\n${results.plain_summary}\n\nThe key check is whether the hanging block’s weight beats the downslope component of Block A plus friction.`;
+      }
+      return `Here’s what I found for your pulley system:\n\n${results.plain_summary}\n\nThat direction makes sense because the hanging mass has enough weight to overcome friction on the table.`;
+    }
+    if (domain === 'Circuits' && model?.SYSTEM_TYPE === 'Voltage Divider') {
+      return `Here’s the divider result:\n\n${results.plain_summary}\n\nOne practical note: this is best for a light signal/reference load. If you need to power something, a regulator is the safer design.`;
+    }
+    if (domain === 'Control') {
+      return `Here’s the controller tuning result:\n\n${results.plain_summary}\n\nThe important idea is that tighter settling time or lower overshoot will move these gains, so we can tune them interactively.`;
+    }
+    return `Here’s what I found:\n\n${results.plain_summary}`;
+  };
+
+  // Rendering decision function for three-tier architecture
+  const resolveRendering = (brainOutput, solverResult, domain, model) => {
+    const tier = brainOutput?.rendering?.tier;
+    
+    return {
+      // Schematic: either template SVG or brain-generated SVG
+      schematicSVG: (() => {
+        if (tier === 1 || tier === '1+2') {
+          // Use existing schematicEngine template
+          try {
+            return generateSchematic(model, domain, solverResult);
+          } catch (e) {
+            console.warn('Template schematic generation failed:', e);
+            return null;
+          }
+        }
+        if (tier === 3 || tier === '3+2' || tier === '3_only') {
+          // Use brain-generated SVG
+          return validateSVGOutput(brainOutput.svg_output);
+        }
+        return null;
+      })(),
+      
+      // Plots: always from plotEngine when solver ran, 
+      // plus any brain SVG plots for supplemental visuals
+      plotlyPlots: solverResult ? getPlots(solverResult, domain, model) : [],
+      svgPlots: brainOutput?.svg_plots || [],
+      
+      // Rendering tier for ModelPane/ResultsPane to know what to show
+      tier
+    };
+  };
+
+  const runSimulationForSession = (sessId, domain, model, options = {}) => {
+    if (!model) return;
+
+    const routed = routeSolver(domain, model, { batch_mode: Boolean(options.batchMode) });
+    const confirmedModel = updateFlowStage(JSON.parse(JSON.stringify(model)), 9, 'completed');
+    Object.keys(confirmedModel || {}).forEach(cat => {
+      if (confirmedModel[cat] && typeof confirmedModel[cat] === 'object') {
+        Object.keys(confirmedModel[cat]).forEach(f => {
+          if (confirmedModel[cat][f]?.tag === 'inferred') {
+            confirmedModel[cat][f].tag = 'confirmed';
+          }
+        });
+      }
+    });
+
+    const solverName = getSolverName(domain, confirmedModel);
+
+    updateSessionModel(sessId, confirmedModel);
+    updateModelState(sessId, 'running');
+    setSolverStatus({ name: solverName, state: 'running', detail: `running ${routed.solver_name}` });
+
+    const solverInstance = runSolver(
+      domain,
+      confirmedModel,
+      (stage, percent, elapsed) => {
+        setSolverProgress({ stage, percent, elapsed });
+        setSolverStatus(prev => ({ ...prev, detail: `${stage} (${percent.toFixed(0)}%)` }));
+      },
+      async (results) => {
+        const stagedResults = {
+          ...results,
+          simforge_flow: {
+            solver_routing: routed,
+            completed_stages: [9, 10],
+            stage_11_ready: true
+          }
+        };
+        updateSessionResults(sessId, results);
+        const completedModel = updateFlowStage(confirmedModel, 12, 'completed');
+        updateSessionModel(sessId, completedModel);
+        updateSessionResults(sessId, stagedResults);
+        updateModelState(sessId, 'completed');
+        updateResultsState(sessId, 'results');
+        setSolverStatus({ name: solverName, state: 'idle' });
+
+        // Call onComplete callback if provided (for new brain architecture)
+        if (options.onComplete && typeof options.onComplete === 'function') {
+          options.onComplete(stagedResults);
+        }
+
+        logMemoryEvent(
+          currentProject.id,
+          sessId,
+          'solver_run',
+          `Ran ${solverName}: solver finished in ${results.metrics?.find(m=>m.name==='Run duration')?.value || '2s'}.`,
+          stagedResults.metrics?.reduce((acc, m) => ({ ...acc, [m.name]: m.value }), {})
+        );
+        updateMemoryState(getMemoryData());
+
+        const newHistoryNode = {
+          timestamp: formatTimestamp(new Date()),
+          description: getRunDescription(domain, confirmedModel),
+          metrics: stagedResults.metrics,
+          rawValue: stagedResults
+        };
+        const currentHist = runHistories[sessId] || [];
+        setRunHistories(prev => ({ ...prev, [sessId]: [newHistoryNode, ...currentHist] }));
+
+        // AI LAYER 10B: Solver Output Sanity Check
+        // Validate that solver results are physically reasonable and answer the question
+        let sanityCheck = { sanity_status: 'VALID' };
+        let originalQuestion = sessionModels[sessId]?._parsed_question?.canonical_form || 'Engineering analysis';
+        try {
+          sanityCheck = await checkSolverOutputSanity(stagedResults, originalQuestion, confirmedModel, domain);
+          
+          if (sanityCheck.sanity_status === 'REJECT' || sanityCheck.sanity_status === 'SUSPICIOUS') {
+            // Log sanity failure
+            logMemoryEvent(
+              currentProject.id,
+              sessId,
+              'solver_output_sanity_failed',
+              `Solver output sanity check failed: ${sanityCheck.recommendation}`,
+              { issues: sanityCheck.issues }
+            );
+            
+            // Add warning message to chat
+            const warningMsg = {
+              id: `m-${Date.now()}-ai`,
+              sender: 'ai',
+              text: `⚠️ Solver Output Sanity Check ${sanityCheck.sanity_status}\n\n${sanityCheck.issues.map(i => `- ${i.description}: ${i.expected} vs ${i.actual}`).join('\n')}\n\nRecommendation: ${sanityCheck.recommendation}`,
+              timestamp: formatTimestamp(new Date())
+            };
+            const messageBase = options.appendToMessages || sessionMessages[sessId] || [];
+            updateSessionMessages(sessId, [...messageBase, warningMsg]);
+          }
+        } catch (err) {
+          console.warn('AI Layer 10B failed, proceeding without sanity check:', err);
+        }
+
+        // Store sanity check in results
+        stagedResults._sanity_check = sanityCheck;
+
+        const baseline = trizBaselines[sessId];
+        const comparison = baseline
+          ? buildComparisonSummary({
+              baselineModel: baseline.model,
+              modifiedModel: confirmedModel,
+              baselineResults: baseline.results,
+              modifiedResults: stagedResults,
+              principle: baseline.principle
+            })
+          : null;
+        const iterationSuggestions = createIterationSuggestions({
+          domain,
+          contradiction: trizContradiction,
+          hasResults: true,
+          mode: 'Engineer'
+        });
+        const comparisonText = comparison
+          ? `\n\n**Conclusion**\n${comparison.metrics.length ? comparison.metrics.map(item => `- ${item.name}: ${item.original} -> ${item.modified}${item.change ? ` (${item.change})` : ''}`).join('\n') : 'This run becomes the comparison anchor because no baseline solver result existed before the design edit.'}\n\n${comparison.verdict}`
+          : '';
+        const iterationText = `\n\n**Next useful moves**\n${iterationSuggestions.map(item => `- ${item}`).join('\n')}`;
+
+        // AI LAYER 11B: Natural Language Explanation Engine
+        // Generate AI-powered explanation instead of using template
+        let explanationText = '';
+        try {
+          const userMode = selectedLLM === 'Groq' ? 'Engineer' : selectedLLM;
+          const explanation = await generateExplanation(stagedResults, originalQuestion, userMode, confirmedModel, domain);
+          
+          explanationText = `**Summary**\n${explanation.summary}\n\n**Direct Answer**\n${explanation.direct_answer}\n\n**Key Findings**\n${explanation.key_findings.map(f => `- ${f}`).join('\n')}\n\n**Technical Explanation**\n${explanation.technical_explanation}`;
+          
+          if (explanation.trade_offs && explanation.trade_offs.length > 0) {
+            explanationText += `\n\n**Trade-offs**\n${explanation.trade_offs.map(t => `- ${t.parameter}: ${t.impact}`).join('\n')}`;
+          }
+          
+          if (explanation.warnings && explanation.warnings.length > 0) {
+            explanationText += `\n\n**Warnings**\n${explanation.warnings.map(w => `- ${w}`).join('\n')}`;
+          }
+          
+          if (explanation.next_steps && explanation.next_steps.length > 0) {
+            explanationText += `\n\n**Next Steps**\n${explanation.next_steps.map(s => `- ${s}`).join('\n')}`;
+          }
+          
+          explanationText += comparisonText + iterationText;
+        } catch (err) {
+          console.warn('AI Layer 11B failed, using fallback explanation:', err);
+          // Fallback to original template
+          explanationText = formatResultAnswer({
+            domain,
+            model: confirmedModel,
+            results: stagedResults,
+            summary: getConversationalResultSummary(domain, confirmedModel, stagedResults),
+            solverName: routed.solver_name,
+            comparisonText,
+            iterationText
+          });
+        }
+
+        const aiSummaryMsg = {
+          id: `m-${Date.now()}-ai`,
+          sender: 'ai',
+          text: explanationText,
+          timestamp: formatTimestamp(new Date())
+        };
+        const messageBase = options.appendToMessages || sessionMessages[sessId] || [];
+        updateSessionMessages(sessId, [...messageBase, aiSummaryMsg]);
+      },
+      (err) => {
+        updateModelState(sessId, 'confirmation');
+        setSolverStatus({ name: solverName, state: 'error' });
+        // BUG FIX: Solver errors used alert() (blocking) and swallowed instant-solver errors silently.
+        // alert() blocks the JS thread and is inappropriate in a production UI.
+        // Fix: Both error paths now append an inline error message to the chat thread
+        // so the user sees what went wrong without a blocking dialog.
+        appendSessionMessage(activeSessionId, {
+          id: `m-${Date.now()}-ai`,
+          sender: 'ai',
+          text: `Solver Error: ${err.message}. Please check your model parameters and try again.`,
+          timestamp: formatTimestamp(new Date())
+        });
+      }
+    );
+
+    setActiveSolverInstance(solverInstance);
+  };
+
+  // BUG FIX: useEffect now lists handleRunSimulation as a dependency so the keyboard
+  // shortcut always calls the current version, not a stale closure from mount.
+  const handleRunSimulation = useCallback(() => {
+    const currentModel = getActiveModel();
+    if (!currentModel) return;
+
+    const currentMessages = getActiveMessages();
+    const preRunMsg = {
+      id: `m-${Date.now()}-ai`,
+      sender: 'ai',
+      text: `Running simulation now.\n\n**Current parameters:** ${summarizeModelForChat(activeDomain, currentModel)}.\n\nI'll refresh the schematic and results, then summarize what changed.`,
+      timestamp: formatTimestamp(new Date()),
+      animated: true
+    };
+    updateSessionMessages(activeSessionId, [...currentMessages, preRunMsg]);
+
+    runSimulationForSession(activeSessionId, activeDomain, currentModel, {
+      appendToMessages: [...currentMessages, preRunMsg],
+      initiatedByChat: true
+    });
+  }, [activeSessionId, activeDomain, getActiveModel, getActiveMessages, runSimulationForSession]);
+
+  // Keyboard Shortcuts Hook
+  useEffect(() => {
+    const handleGlobalKeys = (e) => {
+      // ⌘+Enter or Ctrl+Enter -> Run Simulation
+      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+        e.preventDefault();
+        handleRunSimulation();
+      }
+      // ⌘+E or Ctrl+E -> Focus Chat Input
+      else if ((e.metaKey || e.ctrlKey) && e.key === 'e') {
+        e.preventDefault();
+        window.dispatchEvent(new CustomEvent('focus-chat-input'));
+      }
+      // ⌘+K or Ctrl+K -> Command Palette (DISABLED per user request)
+      // else if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+      //   e.preventDefault();
+      //   setPaletteOpen(prev => !prev);
+      // }
+      // ⌘+/ or Ctrl+/ -> Toggle sidebar collapse
+      else if ((e.metaKey || e.ctrlKey) && e.key === '/') {
+        e.preventDefault();
+        setSidebarCollapsed(prev => !prev);
+      }
+      // ⌘+. or Ctrl+. -> Cycle active domains
+      else if ((e.metaKey || e.ctrlKey) && e.key === '.') {
+        e.preventDefault();
+        const domains = DOMAIN_ORDER;
+        const nextIdx = (domains.indexOf(activeDomain) + 1) % domains.length;
+        handleSwitchDomain(domains[nextIdx]);
+      }
+      // ⌘+Z or Ctrl+Z -> Undo parameter edit
+      else if ((e.metaKey || e.ctrlKey) && e.key === 'z') {
+        if (undoStack.length > 0) {
+          e.preventDefault();
+          const lastEdit = undoStack[undoStack.length - 1];
+          setUndoStack(prev => prev.slice(0, -1));
+          
+          const currentModel = getActiveModel();
+          if (currentModel) {
+            const restored = { ...currentModel };
+            restored[lastEdit.category][lastEdit.field] = lastEdit.oldValue;
+            updateSessionModel(activeSessionId, restored);
+          }
+        }
+      }
+      // Escape -> close everything
+      else if (e.key === 'Escape') {
+        setMemoryOpen(false);
+        setSettingsOpen(false);
+        setPaletteOpen(false);
+        setTrizWizardActive(false);
+        setTrizContradiction(null);
+      }
+    };
+
+    window.addEventListener('keydown', handleGlobalKeys);
+    return () => window.removeEventListener('keydown', handleGlobalKeys);
+  }, [activeDomain, activeSessionId, undoStack, handleRunSimulation, getActiveModel]);
+
+  // CANCEL SIMULATION RUN
+  const handleCancelSimulation = () => {
+    if (activeSolverInstance) {
+      activeSolverInstance.cancel();
+      setActiveSolverInstance(null);
+    }
+    updateModelState(activeSessionId, 'confirmation');
+    setSolverStatus({ name: activeDomain === 'Circuits' ? 'ngspice' : 'solver', state: 'idle' });
+  };
+
+  // TRIZ WIZARD SOLUTION TRIGGERS
+  const handleApplyTrizPrinciple = (principle) => {
+    const currentModel = getActiveModel();
+    if (!currentModel) return;
+
+    const baselineModel = JSON.parse(JSON.stringify(currentModel));
+    const designOptions = buildTrizDesignOptions(trizContradiction, currentModel, 'Engineer');
+    const selectedOption = designOptions.find(option => option.principle_id === principle.num);
+    const { updated, tag } = principle.applyChanges(currentModel);
+    const stagedUpdated = updateFlowStage(updated, 8, 'completed');
+    
+    // Normalize any principle edits into the model field shape used by the panes/solvers.
+    if (stagedUpdated[tag] && typeof stagedUpdated[tag] === 'object') {
+      Object.keys(stagedUpdated[tag]).forEach(field => {
+        const nextField = stagedUpdated[tag][field];
+        const previousField = currentModel[tag]?.[field];
+        const nextValue = nextField?.value ?? nextField;
+        const previousValue = previousField?.value ?? previousField;
+        if (nextValue !== previousValue && (!nextField || typeof nextField !== 'object' || !('value' in nextField))) {
+          stagedUpdated[tag][field] = {
+            value: nextValue,
+            tag: 'TRIZ edit'
+          };
+        } else if (nextValue !== previousValue && stagedUpdated[tag][field]?.tag) {
+          stagedUpdated[tag][field].tag = 'TRIZ edit';
+        } else if (nextValue !== previousValue && stagedUpdated[tag][field]) {
+          stagedUpdated[tag][field] = {
+            ...stagedUpdated[tag][field],
+            tag: 'TRIZ edit'
+          };
+        }
+      });
+    }
+
+    Object.keys(stagedUpdated).forEach(section => {
+      if (section === 'SYSTEM_TYPE' || !stagedUpdated[section] || typeof stagedUpdated[section] !== 'object') return;
+      Object.keys(stagedUpdated[section]).forEach(field => {
+        const nextField = stagedUpdated[section][field];
+        if (nextField && typeof nextField === 'object' && nextField.tag === 'TRIZ edit' && !('value' in nextField)) {
+          stagedUpdated[section][field] = {
+            value: String(nextField),
+            tag: 'TRIZ edit'
+          };
+        }
+      });
+    });
+
+    if (stagedUpdated.SYSTEM_TYPE !== currentModel.SYSTEM_TYPE) {
+      if (!stagedUpdated.META) {
+        stagedUpdated.META = {};
+      }
+      stagedUpdated.META['TRIZ topology change'] = {
+        value: stagedUpdated.SYSTEM_TYPE,
+        tag: 'TRIZ edit',
+        explanation: 'System topology changed by the selected TRIZ principle.'
+      };
+    }
+
+    stagedUpdated.TRIZ_PROPOSAL = {
+      'Principle': { value: `${principle.num} ${principle.name}`, tag: 'TRIZ edit' },
+      'Design option': { value: selectedOption?.design_name || principle.headline, tag: 'TRIZ edit' },
+      'Expected impact': { value: JSON.stringify(selectedOption?.expected_impact || principle.effects || []), tag: 'TRIZ estimate' },
+      'Feasibility': { value: selectedOption?.feasibility?.difficulty || 'review required', tag: 'TRIZ estimate' },
+      'Comparison baseline': { value: baselineModel.SYSTEM_TYPE || 'Original design', tag: 'confirmed' }
+    };
+
+    setTrizBaselines(prev => ({
+      ...prev,
+      [activeSessionId]: {
+        model: baselineModel,
+        results: getActiveResults(),
+        principle,
+        designOptions
+      }
+    }));
+
+    const routed = routeSolver(activeDomain, stagedUpdated);
+    const nextFlowPlan = activeFlowPlans[activeSessionId]
+      ? {
+          ...activeFlowPlans[activeSessionId],
+          solverRouting: routed,
+          stages: activeFlowPlans[activeSessionId].stages.map(stage => (
+            stage.id === 8 ? { ...stage, status: 'completed' }
+              : stage.id === 9 ? { ...stage, status: 'active' }
+                : stage
+          ))
+        }
+      : null;
+    if (nextFlowPlan) {
+      setActiveFlowPlans(prev => ({ ...prev, [activeSessionId]: nextFlowPlan }));
+    }
+
+    updateSessionModel(activeSessionId, stagedUpdated);
+    
+    // Add event to Project Memory Database
+    logMemoryEvent(
+      currentProject.id,
+      activeSessionId,
+      'triz_triggered',
+      `Applied TRIZ Principle ${principle.num}: ${principle.headline}`,
+      {
+        principle: principle.name,
+        expectedEffects: principle.effects || [],
+        validation: principle.validation || [],
+        designOption: selectedOption,
+        solverRouting: routed
+      }
+    );
+    updateMemoryState(getMemoryData());
+
+    // Append AI verification message
+    const trizAck = {
+      id: `m-${Date.now()}-ai`,
+      sender: 'ai',
+      text: `**Problem description**\nI applied **${principle.name}** to the current design: ${principle.headline}\n\n**Mathematics**\nThis changes the model fields in **${tag}**, so the next simulation will compare the edited design against the saved baseline using the same solver metrics.\n\n**Intuition**\n${principle.rationale || 'The design change targets the main trade-off without treating the original geometry as fixed.'}\n\n**Conclusion**\nExpected effect: ${(principle.effects || []).join('; ') || 'run the solver to quantify the trade-off'}.\n\nNext, run the simulation so we can compare the before/after result numerically.`,
+      timestamp: formatTimestamp(new Date()),
+      animated: true
+    };
+    updateSessionMessages(activeSessionId, [...getActiveMessages(), trizAck]);
+  };
+
+  // RESTORE SNAPSHOT FROM MEMORY DATABASE
+  const handleRestoreModelSnapshot = (snapshotValues) => {
+    const currentModel = getActiveModel();
+    if (!currentModel) return;
+
+    // Loop through model categories and overlay snapshot values
+    const restored = JSON.parse(JSON.stringify(currentModel));
+    Object.keys(restored).forEach(cat => {
+      if (typeof restored[cat] === 'object') {
+        Object.keys(restored[cat]).forEach(f => {
+          if (snapshotValues[f] !== undefined) {
+            restored[cat][f].value = snapshotValues[f];
+            restored[cat][f].tag = 'confirmed';
+          }
+        });
+      }
+    });
+    updateSessionModel(activeSessionId, restored);
+
+    const aiRestoreMsg = {
+      id: `m-${Date.now()}-ai`,
+      sender: 'ai',
+      text: `Restored model snapshot parameters from database memory successfully.`,
+      timestamp: formatTimestamp(new Date())
+    };
+    updateSessionMessages(activeSessionId, [...getActiveMessages(), aiRestoreMsg]);
+  };
+
+  // ONBOARDING INITIALIZATION
+  const handleCompleteOnboarding = (dName, text) => {
+    setShowOnboarding(false);
+    setActiveDomain(dName);
+    handleNewSession(dName, dName === 'Default' ? 'Default Playground' : `${dName} Playground`);
+    if (String(text || '').trim()) {
+      setTimeout(() => {
+        handleSendMessage(text);
+      }, 200);
+    }
+  };
+
+  const handleGoHome = () => {
+    if (activeSolverInstance) {
+      activeSolverInstance.cancel();
+      setActiveSolverInstance(null);
+    }
+    if (liveUpdateMessageTimer.current) {
+      clearTimeout(liveUpdateMessageTimer.current);
+      liveUpdateMessageTimer.current = null;
+    }
+
+    const freshMemory = createFreshMemoryData();
+    updateMemoryState(freshMemory);
+    sessionStorage.removeItem(SESSION_STATE_KEY);
+    setSessionMessages({});
+    setSessionModels({});
+    setSessionResults({});
+    setModelStates({});
+    setResultsStates({});
+    setRunHistories({});
+    setUndoStack([]);
+    setClarificationQueue([]);
+    setTrizContradiction(null);
+    setTrizWizardActive(false);
+    setValidationOpen(false);
+    setMemoryOpen(false);
+    setSettingsOpen(false);
+    setPaletteOpen(false);
+    setSolverProgress(null);
+    setSolverStatus({ name: 'ngspice', state: 'idle' });
+    setActiveDomain('Circuits');
+    setShowOnboarding(true);
+  };
+
+  const handleClearWorkspace = () => {
+    if (!activeSessionId) return;
+    if (activeSolverInstance) {
+      activeSolverInstance.cancel();
+      setActiveSolverInstance(null);
+    }
+    if (liveUpdateMessageTimer.current) {
+      clearTimeout(liveUpdateMessageTimer.current);
+      liveUpdateMessageTimer.current = null;
+    }
+
+    updateSessionMessages(activeSessionId, []);
+    setSessionModels(prev => {
+      const next = { ...prev };
+      delete next[activeSessionId];
+      return next;
+    });
+    setSessionResults(prev => {
+      const next = { ...prev };
+      delete next[activeSessionId];
+      return next;
+    });
+    setModelStates(prev => ({ ...prev, [activeSessionId]: 'empty' }));
+    setResultsStates(prev => ({ ...prev, [activeSessionId]: 'empty' }));
+    setRunHistories(prev => ({ ...prev, [activeSessionId]: [] }));
+    setUndoStack([]);
+    setClarificationQueue([]);
+    setTrizContradiction(null);
+    setTrizWizardActive(false);
+    setSolverProgress(null);
+    setSolverStatus({ name: activeDomain === 'Circuits' ? 'ngspice' : 'solver', state: 'idle' });
+  };
+
+  // Export audit CSV logs
+  const handleExportAuditLogs = () => {
+    const csvHeader = "Timestamp,Project,Session,Event Type,Summary\n";
+    const csvRows = memory.events.map(evt => {
+      const projName = memory.projects.find(p=>p.id===evt.projectId)?.name || 'Unknown';
+      return `"${evt.timestamp}","${projName}","${evt.sessionId}","${evt.type}","${evt.summary.replace(/"/g, '""')}"`;
+    }).join("\n");
+
+    const blob = new Blob([csvHeader + csvRows], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.setAttribute("href", url);
+    link.setAttribute("download", `simforge_audit_logs.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  // Pre-initialize empty session on initial render
+  useEffect(() => {
+    if (!activeSession && !showOnboarding) {
+      handleNewSession('Circuits');
+    }
+  }, [activeSessionId, showOnboarding]);
+
+  // Compiled Raw Solver Input string
+  const activeModel = getActiveModel();
+  const visibleModel = getActiveModelState() === 'empty' ? null : activeModel;
+  const rawSolverInputText = visibleModel
+    ? (activeDomain === 'Circuits' ? compileNetlist(visibleModel) : JSON.stringify(visibleModel, null, 2))
+    : '';
+
+  if (isTooNarrow) {
+    return (
+      <div className="flex flex-col items-center justify-center h-screen bg-[#0D0F12] text-center p-6 select-none">
+        <div className="border border-[#252A32] bg-[#13161A] p-8 rounded-lg max-w-sm" style={{ border: '1px solid var(--border)', borderRadius: '6px' }}>
+          <h2 className="text-primary font-semibold text-base" style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: 600 }}>Desktop Environment Required</h2>
+          <p className="text-secondary text-sm mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)', fontSize: '12px', marginTop: '12px', lineHeight: '1.5' }}>
+            SimForge is a professional engineering IDE designed for high-density, multi-pane desktop simulations. Please resize your window or switch to a desktop browser.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Show landing page or main app
+  if (showLandingPage) {
+    return <LandingPage onNavigateToApp={() => setShowLandingPage(false)} />;
+  }
+
+  return (
+    <div className="flex flex-col h-screen overflow-hidden">
+      
+      {/* Onboarding Dialog Overlay */}
+      {showOnboarding && (
+        <Onboarding onCompleteOnboarding={handleCompleteOnboarding} />
+      )}
+
+      {/* Global TopBar Bar */}
+      <TopBar
+        currentProject={currentProject}
+        projects={memory.projects}
+        onSwitchProject={handleSwitchProject}
+        onNewProject={handleNewProject}
+        activeDomain={activeDomain}
+        onSwitchDomain={handleSwitchDomain}
+        selectedLLM={selectedLLM}
+        onSwitchLLM={setSelectedLLM}
+        onOpenValidation={() => setValidationOpen(true)}
+        onHome={handleGoHome}
+      />
+
+      {validationOpen && (
+        <ValidationDashboard onClose={() => setValidationOpen(false)} />
+      )}
+
+      {/* Main Workspace Frame */}
+      <div className="flex-1 flex min-h-0">
+        
+        {/* LeftSidebar Project Memory Sidebar */}
+        <LeftSidebar
+          currentProject={currentProject}
+          projects={memory.projects}
+          onSwitchProject={handleSwitchProject}
+          onNewProject={handleNewProject}
+          sessions={projectSessions}
+          activeSessionId={activeSessionId}
+          onSelectSession={handleSelectSession}
+          onNewSession={() => handleNewSession(activeDomain)}
+          onOpenMemory={() => setMemoryOpen(true)}
+          onOpenSettings={() => setSettingsOpen(true)}
+          isCollapsed={sidebarCollapsed}
+          onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
+        />
+
+        {/* Dynamic Drag-Resizable Workspace Layout Grid */}
+        <ResizableLayout
+          leftPane={
+            <ReasoningPane
+              messages={getActiveMessages()}
+              onSendMessage={handleSendMessage}
+              onClearChat={handleClearWorkspace}
+              clarificationQuestions={clarificationQueue}
+              onAnswerQuestion={handleClarifyAnswer}
+              trizContradiction={trizContradiction}
+              onOpenTrizWizard={() => setTrizWizardActive(true)}
+              onDismissTriz={() => setTrizContradiction(null)}
+              trizWizardActive={trizWizardActive}
+              onCloseTrizWizard={() => {
+                setTrizWizardActive(false);
+                setTrizContradiction(null);
+              }}
+              onApplyTrizPrinciple={handleApplyTrizPrinciple}
+              activeDomain={activeDomain}
+              onEditMessage={handleEditMessage}
+              onRetryMessage={handleRetryMessage}
+            />
+          }
+          centerPane={
+            <ModelPane
+              activeDomain={activeDomain}
+              modelState={getActiveModelState()}
+              modelData={visibleModel}
+              onUpdateField={handleUpdateField}
+              onConfirmAndRun={handleRunSimulation}
+              solverProgress={solverProgress}
+              onCancelSimulation={handleCancelSimulation}
+              versionHistory={getActiveHistory()}
+              onRestoreVersion={(node) => handleRestoreModelSnapshot(node.rawValue.metrics.reduce((acc, m)=>({...acc, [m.name]: m.value}), {}))}
+              rawSolverInput={rawSolverInputText}
+              livePlaygroundActive={livePlaygroundActive}
+              onTogglePlayground={() => setLivePlaygroundActive(!livePlaygroundActive)}
+            />
+          }
+          rightPane={
+            <ResultsPane
+              activeDomain={activeDomain}
+              resultsState={getActiveResultsState()}
+              modelState={getActiveModelState()}
+              resultsData={getActiveResults()}
+              schematicSVG={getActiveSchematicSVG()}
+              svgPlots={getActiveSVGPlots()}
+              onSelectSuggestion={(sName) => handleSendMessage(sName)}
+              runHistory={getActiveHistory()}
+              onCompareRun={handleRestoreModelSnapshot}
+              livePlaygroundActive={livePlaygroundActive}
+              modelData={visibleModel}
+            />
+          }
+        />
+
+      </div>
+
+      {/* Global bottom status tracker */}
+      <StatusBar
+        solverStatus={solverStatus}
+        activeDomain={activeDomain}
+        memoryCount={memory.events.length}
+        onOpenShortcuts={() => {
+          setSettingsOpen(true);
+        }}
+      />
+
+      {/* Modals & Overlays */}
+      <MemoryOverlay
+        isOpen={memoryOpen}
+        onClose={() => setMemoryOpen(false)}
+        events={memory.events}
+        onLoadModelSnapshot={handleRestoreModelSnapshot}
+      />
+
+      <SettingsModal
+        isOpen={settingsOpen}
+        onClose={() => setSettingsOpen(false)}
+        onExportAuditLogs={handleExportAuditLogs}
+      />
+
+      <CommandPalette
+        isOpen={paletteOpen}
+        onClose={() => setPaletteOpen(false)}
+        projects={memory.projects}
+        sessions={projectSessions}
+        onSwitchProject={handleSwitchProject}
+        onSelectSession={handleSelectSession}
+        onRunSimulation={handleRunSimulation}
+        onOpenTrizWizard={() => setTrizWizardActive(true)}
+        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenMemory={() => setMemoryOpen(true)}
+      />
+
+    </div>
+  );
+}

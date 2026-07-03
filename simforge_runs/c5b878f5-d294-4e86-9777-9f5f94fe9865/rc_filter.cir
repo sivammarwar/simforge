@@ -1,0 +1,10 @@
+V1 1 0 DC 0 AC 1
+R1 1 2 1000
+C1 2 0 1e-6
+.ac dec 100 10 100000
+.control
+  run
+  plot v(2)
+  print v(2)
+  quit
+.endc

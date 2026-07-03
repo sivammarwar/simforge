@@ -1,0 +1,13 @@
+[
+  {
+    "id": "aer-wing-001",
+    "domain": "Aerospace",
+    "prompt": "Design a rectangular wing for a small UAV with 2m wingspan and 0.3m chord flying at 25 m/s at sea level using NACA 4412 at 6 degrees angle of attack. Calculate lift distribution, total lift, and induced drag.",
+    "expected": {
+      "requires_lift_distribution": true,
+      "requires_induced_drag": true
+    },
+    "evidence": ["wing diagram", "lift distribution", "total lift", "induced drag"]
+  }
+]
+

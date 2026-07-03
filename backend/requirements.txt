@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+celery
+redis
+sqlalchemy
+psycopg2-binary
+minio
+pydantic
+aiofiles
+websockets
+requests
+lcapy==1.26
+# NOTE: Install lcapy with --no-deps to avoid broken "importlib" dependency:
+# pip install lcapy==1.26 --no-deps
+# numpy, matplotlib, sympy, scipy should come from existing requirements

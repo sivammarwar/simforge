@@ -1,0 +1,15 @@
+Second-Order Control System
+V1 1 0 DC 0
+R1 1 2 1
+C1 2 3 0.2
+C2 3 0 0.2
+R2 3 0 1
+.tran 0.01 10
+.print tran V(3)
+.control
+  set filetype=ascii
+  run
+  write second_order_control_system.raw
+  quit
+.endc
+.end

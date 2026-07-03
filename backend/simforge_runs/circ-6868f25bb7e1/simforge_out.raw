@@ -1,0 +1,16 @@
+Title: * voltage divider
+Date: Fri Jul  3 22:55:18  2026
+Command: ngspice-46, Build 
+Plotname: Operating Point
+Flags: real
+No. Variables: 3
+No. Points: 1
+Variables:
+	0	v(1)	voltage
+	1	v(2)	voltage
+	2	i(v1)	current
+Values:
+ 0	1.200000000000000e+01
+	3.529411764705882e+00
+	-3.529411764705882e-03
+

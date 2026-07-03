@@ -1,0 +1,12 @@
+.title RC Low-Pass Filter
+
+R1 1 2 1k
+C1 2 0 1e-6
+
+V1 1 0 AC 1V
+
+.ac dec 10 10 100k
+
+.print tran v(2)
+
+.end

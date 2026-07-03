@@ -1,0 +1,12 @@
+[
+  {
+    "id": "mat-fatigue-001",
+    "domain": "Materials",
+    "prompt": "A steel part cycles between 20 MPa and 220 MPa for 1e6 cycles. Ultimate strength is 550 MPa and endurance strength is 275 MPa. Check fatigue safety.",
+    "expected": {
+      "requires_goodman": true
+    },
+    "evidence": ["mean stress", "alternating stress", "Goodman utilization", "safety factor"]
+  }
+]
+

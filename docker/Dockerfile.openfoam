@@ -1,0 +1,15 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    wget \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install OpenFOAM from GitHub releases
+RUN cd /opt && \
+    wget https://github.com/OpenFOAM/OpenFOAM-9/archive/refs/tags/9.0.tar.gz && \
+    tar xzf 9.0.tar.gz && \
+    mv OpenFOAM-9-9.0 OpenFOAM-9 && \
+    rm 9.0.tar.gz
+
+WORKDIR /work
+ENTRYPOINT ["bash"]

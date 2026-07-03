@@ -1,0 +1,82 @@
+Header
+  Mesh DB "." "."
+  Include Path ""
+  Results
+  Results Directory ""
+End
+
+Simulation
+  Model = "Heat Transfer"
+  Coordinate System = Cartesian 2D
+  Coordinate Mapping(3) = 1 2
+  Simulation Type = Steady State
+  
+  Max Output Level = 5
+  Output File = "case.dat"
+  Post File = "case.ep"
+  
+  Steady State Max Iterations = 50
+  Steady State Min Iterations = 2
+  Linear System Solver = Iterative
+  Linear System Iterative Method = BiCGStab
+  Linear System Max Iterations = 500
+  Linear System Convergence Tolerance = 1.0e-6
+  Linear System Abort Not Converged = False
+  Linear System Residual Output = 10
+  Linear System Preconditioning = ILU0
+  Bicgstab preconditioning = Diagonal
+End
+
+Constants
+  Stefan Boltzmann = 5.670374419e-8
+End
+
+Body 1
+  Target Bodies(1) = 1
+  Name = "Heat Source"
+  Equation = 1
+  Material = 1
+  Initial Condition = 1
+End
+
+Initial Condition 1
+  Temperature = 293.15
+End
+
+Material 1
+  Name = "Aluminum"
+  Heat Conductivity = 51.9
+  Heat Capacity = 896
+  Density = 2700
+End
+
+Equation 1
+  Active Solvers(1) = 1
+  Convection = Logical True
+End
+
+Solver 1
+  Equation = Heat Equation
+  Variable = Temperature
+  Procedure = "HeatSolve"
+  
+  Linear System Solver = Iterative
+  Linear System Iterative Method = BiCGStab
+  Linear System Max Iterations = 500
+  Linear System Convergence Tolerance = 1.0e-6
+  Linear System Preconditioning = ILU0
+  Linear System Residual Output = 10
+End
+
+Boundary Condition 1
+  Target Boundaries(1) = 1
+  Name = "Heat Source"
+  Heat Flux = 10000.0
+End
+
+Boundary Condition 2
+  Target Boundaries(1) = 2
+  Name = "Convective"
+  Heat Transfer Coefficient = 10
+  External Temperature = 293.15
+End

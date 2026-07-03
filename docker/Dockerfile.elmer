@@ -1,0 +1,34 @@
+FROM ubuntu:22.04
+
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    cmake \
+    git \
+    wget \
+    libblas-dev \
+    liblapack-dev \
+    libarpack2-dev \
+    libhdf5-dev \
+    libmetis-dev \
+    libmumps-dev \
+    libhypre-dev \
+    libparmetis-dev \
+    libsuperlu-dev \
+    libz-dev \
+    python3-dev \
+    libboost-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Download and install Elmer
+RUN cd /tmp && \
+    wget https://github.com/ElmerCSC/elmerfem/archive/refs/tags/release-9.0.tar.gz && \
+    tar xzf release-9.0.tar.gz && \
+    cd elmerfem-release-9.0 && \
+    mkdir build && cd build && \
+    cmake .. && \
+    make -j 4 && \
+    make install && \
+    cd /tmp && rm -rf elmerfem-release-9.0 release-9.0.tar.gz
+
+WORKDIR /work
+ENTRYPOINT ["ElmerSolver"]

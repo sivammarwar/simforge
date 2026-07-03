@@ -1,0 +1,135 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=JetBrains+Mono&display=swap');
+
+:root {
+  --bg-base: #0D0F12;
+  --bg-surface: #13161A;
+  --bg-elevated: #1C2026;
+  --border: #252A32;
+  --accent-primary: #3B82F6;
+  --accent-secondary: #F59E0B;
+  --success: #22C55E;
+  --error: #EF4444;
+  --text-primary: #E8EAF0;
+  --text-secondary: #8C929E;
+  --text-muted: #4B5260;
+  --code-syntax: #C8D0E0;
+  --code-bg: #0A0C0F;
+  --font-ui: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  background-color: var(--bg-base);
+  color: var(--text-primary);
+  font-family: var(--font-ui);
+  font-size: 13px;
+  overflow: hidden;
+  height: 100vh;
+  width: 100vw;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom Scrollbars */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-base);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--text-muted);
+}
+
+/* Typography styles */
+code, pre, .mono-font {
+  font-family: var(--font-mono);
+  font-size: 12px;
+}
+
+h1, h2, h3, h4 {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+button {
+  font-family: var(--font-ui);
+  font-size: 12px;
+  background: none;
+  border: none;
+  color: inherit;
+  cursor: pointer;
+  outline: none;
+  transition: background 80ms, color 80ms, border-color 80ms;
+}
+
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 2px;
+}
+
+input, textarea, select {
+  font-family: var(--font-ui);
+  font-size: 13px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  border-radius: 4px;
+  padding: 4px 8px;
+  outline: none;
+  transition: border-color 80ms;
+}
+
+input:focus, textarea:focus, select:focus {
+  border-color: var(--accent-primary);
+}
+
+/* Tooltip standard */
+.tooltip-trigger {
+  position: relative;
+}
+
+/* Utility layout styles */
+.flex { display: flex; }
+.flex-col { flex-direction: column; }
+.flex-1 { flex: 1; min-height: 0; min-width: 0; }
+.items-center { align-items: center; }
+.justify-between { justify-content: space-between; }
+.gap-1 { gap: 4px; }
+.gap-2 { gap: 8px; }
+.gap-3 { gap: 12px; }
+.gap-4 { gap: 16px; }
+
+/* Text color helpers */
+.text-primary { color: var(--text-primary); }
+.text-secondary { color: var(--text-secondary); }
+.text-muted { color: var(--text-muted); }
+.text-accent { color: var(--accent-primary); }
+.text-amber { color: var(--accent-secondary); }
+.text-success { color: var(--success); }
+.text-error { color: var(--error); }
+
+/* Drag divider handles */
+.drag-handle-h {
+  width: 4px;
+  background: var(--bg-base);
+  cursor: col-resize;
+  transition: background 150ms;
+  position: relative;
+  z-index: 10;
+  align-self: stretch;
+}
+.drag-handle-h:hover, .drag-handle-h.active {
+  background: var(--accent-primary);
+}

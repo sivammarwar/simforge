@@ -1,0 +1,86 @@
+services:
+  # Redis for Celery message broker
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+
+  # PostgreSQL for task and result storage
+  postgres:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=simforge
+      - POSTGRES_PASSWORD=simforge
+      - POSTGRES_DB=simforge
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  # MinIO for S3-compatible file storage
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=simforge
+      - MINIO_ROOT_PASSWORD=simforge123
+    volumes:
+      - minio_data:/data
+    command: server /data --console-address ":9001"
+
+  # SimForge FastAPI Backend
+  simforge-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    ports:
+      - "8000:8787"
+    env_file:
+      - ../.env
+    environment:
+      - API_PORT=8787
+      - DATABASE_URL=postgresql://simforge:simforge@postgres:5432/simforge
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=simforge
+      - MINIO_SECRET_KEY=simforge123
+    depends_on:
+      - redis
+      - postgres
+      - minio
+    volumes:
+      - /tmp/simforge:/tmp/simforge
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # Celery Worker for async solver execution
+  simforge-worker:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.api
+    command: celery -A workers.celery_app worker --loglevel=info
+    env_file:
+      - ../.env
+    environment:
+      - DATABASE_URL=postgresql://simforge:simforge@postgres:5432/simforge
+      - REDIS_URL=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=simforge
+      - MINIO_SECRET_KEY=simforge123
+    depends_on:
+      - redis
+      - postgres
+      - minio
+    volumes:
+      - /tmp/simforge:/tmp/simforge
+      - /var/run/docker.sock:/var/run/docker.sock
+
+volumes:
+  redis_data:
+  postgres_data:
+  minio_data:
+

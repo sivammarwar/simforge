@@ -1,0 +1,12 @@
+[
+  {
+    "id": "ctl-pid-001",
+    "domain": "Control",
+    "prompt": "Tune a PID controller for G(s)=10/(s*(s+2)) with settling time below 1s and overshoot below 15%.",
+    "expected": {
+      "requires_pid_gains": true
+    },
+    "evidence": ["Kp", "Ki", "Kd", "settling time", "overshoot"]
+  }
+]
+

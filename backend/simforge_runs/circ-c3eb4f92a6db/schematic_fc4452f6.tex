@@ -1,0 +1,20 @@
+\documentclass[a4paper]{standalone}
+\usepackage{amsmath}
+\usepackage{circuitikz}
+\usetikzlibrary{fit, shapes, arrows, patterns, decorations.text, decorations.markings}
+
+\begin{document}
+\begin{tikzpicture}[scale=1.00, transform shape, /tikz/circuitikz/bipoles/length=1.50cm, american currents, american voltages, voltage dir=RP]
+  \coordinate (1) at (0,2);
+  \coordinate (0) at (0,0);
+  \coordinate (2) at (2,2);
+  \coordinate (0_2) at (2,0);
+  \draw (0) to [V, l^={$V_{1}$=$0\,\mathrm{V}$}, n=V1] (1);
+  \draw (1) to [R, l_={$R_{1}$=$1.59\,\mathrm{k}\Omega$}, n=R1] (2);
+  \draw (2) to [C, l_={$C_{1}$=$0.1\,\mu\mathrm{F}$}, n=C1] (0_2);
+  \draw (0) to (0_2);
+  \draw[anchor=south east] (1) node {1};
+  \draw[anchor=south east] (0) node {0};
+  \draw[anchor=south east] (2) node {2};
+\end{tikzpicture}
+\end{document}

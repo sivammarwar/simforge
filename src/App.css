@@ -1,0 +1,99 @@
+/* App.css cleared for SimForge layout */
+
+/* ModelPane Interactive Styles */
+.changed-field {
+  background: rgba(250, 204, 21, 0.05);
+  border-left: 2px solid var(--accent-primary);
+  padding-left: 8px;
+}
+
+.changed-indicator {
+  color: var(--accent-primary);
+  font-size: 8px;
+  animation: pulse 2s infinite;
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.param-slider-container {
+  margin-top: 8px;
+  padding: 8px;
+  background: rgba(255, 255, 255, 0.02);
+  border-radius: 4px;
+}
+
+.param-slider {
+  width: 100%;
+  height: 4px;
+  -webkit-appearance: none;
+  appearance: none;
+  background: #252A32;
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+}
+
+.param-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  cursor: pointer;
+  transition: transform 0.1s;
+}
+
+.param-slider::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
+}
+
+.param-slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent-primary);
+  cursor: pointer;
+  border: none;
+  transition: transform 0.1s;
+}
+
+.param-slider::-moz-range-thumb:hover {
+  transform: scale(1.2);
+}
+
+.slider-labels {
+  font-family: monospace;
+  opacity: 0.7;
+}
+
+.run-simulation-bar {
+  animation: slideIn 0.3s ease-out;
+}
+
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(-10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.run-sim-btn {
+  transition: all 0.2s ease;
+}
+
+.run-sim-btn:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(250, 204, 21, 0.3);
+}
+
+.run-sim-btn:active {
+  transform: translateY(0);
+}
