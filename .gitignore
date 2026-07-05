@@ -28,4 +28,9 @@ dist-ssr
 __pycache__/
 *.pyc
 backend/venv/
-backend/simforge_runs/
+.venv-solvers/
+simforge_runs/
+
+# Server-side state (client-side memory only per spec)
+dump.rdb
+minio-data/

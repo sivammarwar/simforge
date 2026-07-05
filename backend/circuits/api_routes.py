@@ -19,6 +19,7 @@ your backend console/logs even before checking the frontend network tab.
 
 import logging
 import uuid
+from typing import Literal, Optional
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
@@ -34,9 +35,29 @@ class CircuitSolveRequest(BaseModel):
     provider: str = "groq"
 
 
+class AnalogSimResult(BaseModel):
+    """Strict result shape for a completed analog simulation run.
+
+    Only constructed for status == "completed" — the other orchestrator
+    outcomes (failed/unsupported/out_of_scope) have no netlist/output file/
+    schematic to report and keep going through the plain dict path in
+    CircuitSolveResponse.result instead.
+    """
+    sub_domain: Literal["analog_sim"]
+    tool_used: Literal["ngspice", "xyce"]
+    netlist: str
+    raw_output_path: str
+    metrics: list
+    # dict-of-arrays (e.g. {"t": [...], "Vc": [...]}), not a list of records —
+    # matches what plotEngine.js already reads (time_series.t, .freq, etc.)
+    frequency_response: Optional[dict] = None
+    time_series: Optional[dict] = None
+    schematic_svg: str
+
+
 class CircuitSolveResponse(BaseModel):
     success: bool
-    result: dict | None = None
+    result: AnalogSimResult | dict | None = None
     error: str | None = None
     stage: str | None = None
 

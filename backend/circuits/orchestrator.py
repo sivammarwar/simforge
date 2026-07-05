@@ -205,6 +205,23 @@ def to_standardized_result(orchestrator_output: Dict[str, Any]) -> Dict[str, Any
     if sim and analysis_type == "ac":
         print(f"[DEBUG] AC sim keys: {list(sim.keys())}, magnitude_db={sim.get('magnitude_db')}, phase_deg={sim.get('phase_deg')}")
 
+    if status == "completed":
+        # Deferred import: api_routes.py imports this module at load time,
+        # so importing AnalogSimResult at module scope here would deadlock
+        # on the circular import.
+        from .api_routes import AnalogSimResult
+
+        return AnalogSimResult(
+            sub_domain="analog_sim",
+            tool_used="ngspice",
+            netlist=netlist,
+            raw_output_path=sim.get("output_path", "") if sim else "",
+            metrics=metrics,
+            frequency_response=frequency_response,
+            time_series=time_series,
+            schematic_svg=orchestrator_output.get("schematic_svg") or "",
+        )
+
     return {
         "domain": "Circuits",
         "system_type": orchestrator_output.get("system_type", "Unknown Circuit"),

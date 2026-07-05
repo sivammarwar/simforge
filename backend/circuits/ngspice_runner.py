@@ -271,5 +271,8 @@ def run_ngspice(
     parsed["analysis_type"] = analysis_type
     parsed["run_duration_s"] = round(elapsed, 3)
     parsed["deck_path"] = str(deck_path)
+    # operating_point has no wrdata table (values come from stdout), so fall
+    # back to the deck path as the closest thing to a "raw output" on disk.
+    parsed["output_path"] = str(output_txt) if output_txt.exists() else str(deck_path)
     parsed["ngspice_returncode"] = result.returncode
     return parsed
