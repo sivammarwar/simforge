@@ -4,12 +4,8 @@
  * Replaces fragmented validation logic
  */
 
-// Domain validators
+// Domain validators — Circuits only
 import { validateCircuitParameters } from './domains/circuits/validator';
-import { validateStructuralParameters } from './domains/structural/validator';
-import { validateThermalParameters } from './domains/thermal/validator';
-import { validateFluidsParameters } from './domains/fluids/validator';
-import { validateAerospaceParameters } from './domains/aerospace/validator';
 
 /**
  * Validate parameters based on domain
@@ -20,11 +16,7 @@ import { validateAerospaceParameters } from './domains/aerospace/validator';
  */
 export function validateParameters(domain, systemType, parameters) {
   const validators = {
-    'Circuits': validateCircuitParameters,
-    'Structural': validateStructuralParameters,
-    'Thermal': validateThermalParameters,
-    'Fluids': validateFluidsParameters,
-    'Aerospace': validateAerospaceParameters
+    'Circuits': validateCircuitParameters
   };
   
   const validator = validators[domain];

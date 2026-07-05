@@ -8,6 +8,7 @@ export default function ModelPane({
   parameters,  // array of {section, field, value, unit, tag, editable, file_anchor}
   onUpdateField, // (section, field, newValue)
   onConfirmAndRun,
+  onApplyChangesAndRun, // NEW: (changes[]) => void — batch-applies pending slider edits, then runs
   solverProgress, // { stage, percent, elapsed }
   onCancelSimulation,
   versionHistory, // array of past models
@@ -132,34 +133,9 @@ export default function ModelPane({
     return cat.replace(/_/g, ' ');
   };
 
-  // Build model fields breakdown grouping
+  // Build model fields breakdown grouping — Circuits only
   const getDomainCategories = () => {
-    const appendExisting = (base, optional) => [
-      ...base,
-      ...optional.filter(cat => modelData?.[cat] && !base.includes(cat))
-    ];
-    if (activeDomain === 'Physics') {
-      return ['PROBLEM', 'MASSES', 'CONTACT', 'SPRING', 'MOTION', 'BODY', 'WAVE', 'DIAGRAM', 'SIMULATION'].filter(cat => modelData?.[cat]);
-    } else if (activeDomain === 'Circuits') {
-      return ['INPUT', 'OUTPUT', 'COMPONENTS', 'SIMULATION'];
-    } else if (activeDomain === 'Structural') {
-      return appendExisting(['GEOMETRY', 'MATERIAL', 'LOADING', 'SIMULATION'], ['MASSES', 'CONTACT', 'MOTION', 'SPRING', 'DIAGRAM']);
-    } else if (activeDomain === 'Fluids') {
-      return ['GEOMETRY', 'FLUID', 'BOUNDARY_CONDITIONS', 'SIMULATION'];
-    } else if (activeDomain === 'Semiconductors') {
-      return ['GEOMETRY', 'MATERIAL', 'BIASING', 'SIMULATION'];
-    } else if (activeDomain === 'Aerospace') {
-      return appendExisting(['GEOMETRY', 'PROPULSION', 'SIMULATION'], ['FLIGHT_CONDITIONS', 'AERODYNAMICS']);
-    } else if (activeDomain === 'Thermal') {
-      return ['HEAT_LOAD', 'TEMPERATURES', 'THERMAL_PATH', 'SIMULATION'];
-    } else if (activeDomain === 'Control') {
-      return ['PLANT', 'REQUIREMENTS', 'CONTROLLER', 'SIMULATION'];
-    } else if (activeDomain === 'Materials') {
-      return ['MATERIAL', 'LOADING', 'GEOMETRY', 'SIMULATION'].filter(cat => modelData?.[cat]);
-    } else if (activeDomain === 'Power') {
-      return ['INPUT', 'PERFORMANCE', 'SIMULATION'];
-    }
-    return [];
+    return ['INPUT', 'OUTPUT', 'COMPONENTS', 'SIMULATION'];
   };
 
   return (
@@ -315,22 +291,46 @@ export default function ModelPane({
                           <button 
                             className="run-sim-btn flex items-center gap-2 px-3 py-1.5 bg-[var(--accent-primary)] hover:bg-[var(--accent-primary)]/80 text-white text-xs font-semibold rounded transition-colors"
                             onClick={() => {
-                              // Commit all pending changes
-                              Object.entries(pendingChanges).forEach(([fieldKey, newValue]) => {
-                                const param = parameters.find(p => `${p.section}.${p.field}` === fieldKey);
-                                if (param) {
-                                  const formatted = `${newValue} ${param.unit || ''}`.trim();
-                                  onUpdateField(param.section, param.field, formatted);
-                                }
-                              });
-                              
-                              // Clear pending changes
+                              // BUGFIX: previously this looped calling onUpdateField(...) once per
+                              // pending change, then synchronously called onConfirmAndRun(true).
+                              // Each onUpdateField call in App.jsx read stale closure state
+                              // (getActiveInputFile/getActiveParameters), so multi-slider batches
+                              // silently lost all but the last edit, AND the simulation ran
+                              // against the pre-edit file because React hadn't committed any of
+                              // the setState calls yet in this synchronous tick.
+                              //
+                              // Fix: bundle every pending change into a single array and hand it
+                              // to a new onApplyChangesAndRun(changes) callback. The parent
+                              // (App.jsx) applies all edits to local variables together, commits
+                              // state ONCE, and runs the simulation using the freshly-built
+                              // input file directly — never by re-reading (possibly stale) state.
+                              const changes = Object.entries(pendingChanges).map(([key, newValue]) => {
+                                const param = parameters.find(p => `${p.section}.${p.field}` === key);
+                                if (!param) return null;
+                                return {
+                                  section: param.section,
+                                  field: param.field,
+                                  value: `${newValue} ${param.unit || ''}`.trim(),
+                                  oldValue: `${param.value} ${param.unit || ''}`.trim()
+                                };
+                              }).filter(Boolean);
+
+                              // Clear pending changes locally right away for snappy UI feedback
                               setPendingChanges({});
                               setHasUnsavedChanges(false);
                               setChangedFields(new Set());
-                              
-                              // Run simulation
-                              onConfirmAndRun(true);
+
+                              if (onApplyChangesAndRun) {
+                                onApplyChangesAndRun(changes);
+                              } else {
+                                // Fallback for callers that haven't wired the new prop yet:
+                                // preserves old (buggy-on-multi-edit but functional-on-single-edit)
+                                // behavior rather than doing nothing.
+                                changes.forEach(change => {
+                                  onUpdateField(change.section, change.field, change.value);
+                                });
+                                onConfirmAndRun(true);
+                              }
                             }}
                           >
                             <Play size={12} />

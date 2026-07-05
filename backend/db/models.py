@@ -36,9 +36,9 @@ class Task(Base):
     id = Column(String(36), primary_key=True, default=lambda: str(uuid.uuid4()))
     
     # Submission info
-    domain = Column(String(50), nullable=False, index=True)  # Structural, Fluids, Thermal, etc.
-    system_type = Column(String(100), nullable=False)        # Cantilever Beam, Pipe Flow, etc.
-    solver_name = Column(String(50), nullable=False, index=True)  # CalculiX, OpenFOAM, etc.
+    domain = Column(String(50), nullable=False, index=True)  # Circuits
+    system_type = Column(String(100), nullable=False)        # RC Filter, Voltage Divider, etc.
+    solver_name = Column(String(50), nullable=False, index=True)  # ngspice
     execution_environment = Column(String(20), default="docker")  # docker, local
     
     # Status tracking

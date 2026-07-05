@@ -38,16 +38,7 @@ class SolverResponse(BaseModel):
 # ─── SOLVER REGISTRY ──────────────────────────────────────────────────
 
 SOLVER_REGISTRY = {
-    "Structural": {"solver": "CalculiX", "timeout": 600},
-    "Fluids": {"solver": "OpenFOAM", "timeout": 1800},
-    "Thermal": {"solver": "Elmer", "timeout": 600},
-    "Aerospace": {"solver": "XFOIL", "timeout": 120},
     "Circuits": {"solver": "ngspice", "timeout": 120},
-    "Control": {"solver": "python-control", "timeout": 30},
-    "Power": {"solver": "pandapower", "timeout": 30},
-    "Physics": {"solver": "analytical", "timeout": 5},
-    "Materials": {"solver": "analytical", "timeout": 5},
-    "Semiconductors": {"solver": "ngspice", "timeout": 120},
 }
 
 # ─── API ENDPOINTS ────────────────────────────────────────────────────
@@ -234,7 +225,7 @@ async def list_tasks(
     
     Query parameters:
     - status: queued|running|completed|failed
-    - domain: Structural|Fluids|Thermal|...
+    - domain: Circuits
     - limit: Max results (default 50)
     - offset: Pagination offset (default 0)
     """

@@ -92,6 +92,7 @@ def lcapy_netlist_to_spice(netlist_text: str) -> List[str]:
     Returns a list of SPICE component-line strings (no title, no
     directives, no .end — the caller assembles the full deck).
     """
+    print(f"[FLOW TRACE] 7/9 netlist_translate.py — lcapy_netlist_to_spice() called")
     lines = parse_netlist_lines(netlist_text)
     if not lines:
         raise NetlistTranslationError("Netlist is empty after stripping comments/options.")

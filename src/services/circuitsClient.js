@@ -40,6 +40,7 @@
  *   }
  */
 export async function solveCircuitQuestion(question, provider = 'groq') {
+  console.log('[FLOW TRACE] 2/9 circuitsClient.js — POST /api/circuits/solve', { question: question.slice(0, 80), provider });
   const response = await fetch('/api/circuits/solve', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

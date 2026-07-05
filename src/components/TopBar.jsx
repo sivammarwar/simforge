@@ -87,35 +87,11 @@ export default function TopBar({
           Validation
         </button>
 
+        {/* Sub-domain badge — Circuits is the only domain */}
         <div className="domain-switcher-container">
-          <button
-            className="domain-badge flex items-center gap-1"
-            onClick={() => setDomainOpen(!domainOpen)}
-          >
-            {activeDomain}
-            <ChevronDown size={10} className="text-muted" />
-          </button>
-          
-          {domainOpen && (
-            <>
-              <div className="dropdown-overlay" onClick={() => setDomainOpen(false)} />
-              <div className="dropdown-menu dropdown-right">
-                <div className="dropdown-header">SIMULATION DOMAIN</div>
-                {['Default', 'Physics', 'Circuits', 'Structural', 'Fluids', 'Semiconductors', 'Aerospace', 'Thermal', 'Control', 'Materials', 'Power'].map(d => (
-                  <button
-                    key={d}
-                    className={`dropdown-item ${d === activeDomain ? 'active' : ''}`}
-                    onClick={() => {
-                      onSwitchDomain(d);
-                      setDomainOpen(false);
-                      }}
-                    >
-                      {d} {d === 'Default' ? '(Auto Detect)' : d === 'Physics' ? '(Mechanics)' : d === 'Circuits' ? '(ngspice)' : d === 'Structural' ? '(CalculiX FEA)' : d === 'Fluids' ? '(OpenFOAM CFD)' : d === 'Semiconductors' ? '(SPICE TCAD)' : d === 'Aerospace' ? '(Aero 1D)' : d === 'Thermal' ? '(Thermal Budget)' : d === 'Control' ? '(PID)' : d === 'Materials' ? '(Fatigue)' : '(Power Balance)'}
-                    </button>
-                  ))}
-              </div>
-            </>
-          )}
+          <span className="domain-badge flex items-center gap-1">
+            {activeDomain || 'Circuits'}
+          </span>
         </div>
 
         {/* LLM Selector */}

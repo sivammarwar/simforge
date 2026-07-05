@@ -49,7 +49,7 @@ export default function LeftSidebar({
       <div className="sessions-list flex-1">
         {sessions && sessions.length > 0 ? (
           sessions.map(s => {
-            const domainShort = s.domain === 'Physics' ? 'PHY' : s.domain === 'Circuits' ? 'CKT' : s.domain === 'Structural' ? 'FEA' : s.domain === 'Fluids' ? 'CFD' : s.domain === 'Semiconductors' ? 'SMC' : s.domain === 'Aerospace' ? 'AER' : s.domain;
+            const domainShort = 'CKT';
             
             return (
               <button

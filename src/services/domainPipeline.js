@@ -9,37 +9,11 @@ import { validateParameters, validateSimulationRequest } from './dataValidator';
 import { generatePlotFromBackendResult, generateAllPlotsFromBackendResult } from './plotFactory';
 import { runSolverWithBackend } from './solvers';
 
-// Domain services
+// Domain services — Circuits only
 import { getSolverName as getCircuitsSolver, getDefaultParameters as getCircuitsDefaults } from './domains/circuits/validator';
-import { getSolverName as getStructuralSolver, getDefaultParameters as getStructuralDefaults } from './domains/structural/validator';
-import { getSolverName as getThermalSolver, getDefaultParameters as getThermalDefaults } from './domains/thermal/validator';
-import { getSolverName as getFluidsSolver, getDefaultParameters as getFluidsDefaults } from './domains/fluids/validator';
-import { getSolverName as getAerospaceSolver, getDefaultParameters as getAerospaceDefaults } from './domains/aerospace/validator';
-import { getSolverName as getControlSolver, getDefaultParameters as getControlDefaults } from './domains/control/validator';
-
-// Domain input generators
 import { generateNetlist as generateCircuitsInput } from './domains/circuits/netlister';
-import { generateInputFile as generateStructuralInput } from './domains/structural/inputGenerator';
-import { generateInputFile as generateThermalInput } from './domains/thermal/inputGenerator';
-import { generateInputFile as generateFluidsInput } from './domains/fluids/inputGenerator';
-import { generateInputFile as generateAerospaceInput } from './domains/aerospace/inputGenerator';
-import { generateInputFile as generateControlInput } from './domains/control/inputGenerator';
-
-// Domain output parsers
 import { parseBackendResult as parseCircuitsResult } from './domains/circuits/outputParser';
-import { parseBackendResult as parseStructuralResult } from './domains/structural/outputParser';
-import { parseBackendResult as parseThermalResult } from './domains/thermal/outputParser';
-import { parseBackendResult as parseFluidsResult } from './domains/fluids/outputParser';
-import { parseBackendResult as parseAerospaceResult } from './domains/aerospace/outputParser';
-import { parseBackendResult as parseControlResult } from './domains/control/outputParser';
-
-// Domain schematic generators
 import { generateCircuitSchematic } from './domains/circuits/schematicGenerator';
-import { generateStructuralSchematic } from './domains/structural/schematicGenerator';
-import { generateThermalSchematic } from './domains/thermal/schematicGenerator';
-import { generateFluidSchematic } from './domains/fluids/schematicGenerator';
-import { generateAerospaceSchematic } from './domains/aerospace/schematicGenerator';
-import { generateControlSchematic } from './domains/control/schematicGenerator';
 
 /**
  * Get domain configuration
@@ -54,41 +28,6 @@ function getDomainConfig(domain) {
       generateInput: generateCircuitsInput,
       parseResult: parseCircuitsResult,
       generateSchematic: generateCircuitSchematic
-    },
-    'Structural': {
-      solver: getStructuralSolver(),
-      getDefaults: getStructuralDefaults,
-      generateInput: generateStructuralInput,
-      parseResult: parseStructuralResult,
-      generateSchematic: generateStructuralSchematic
-    },
-    'Thermal': {
-      solver: getThermalSolver(),
-      getDefaults: getThermalDefaults,
-      generateInput: generateThermalInput,
-      parseResult: parseThermalResult,
-      generateSchematic: generateThermalSchematic
-    },
-    'Fluids': {
-      solver: getFluidsSolver(),
-      getDefaults: getFluidsDefaults,
-      generateInput: generateFluidsInput,
-      parseResult: parseFluidsResult,
-      generateSchematic: generateFluidSchematic
-    },
-    'Aerospace': {
-      solver: getAerospaceSolver(),
-      getDefaults: getAerospaceDefaults,
-      generateInput: generateAerospaceInput,
-      parseResult: parseAerospaceResult,
-      generateSchematic: generateAerospaceSchematic
-    },
-    'Control': {
-      solver: getControlSolver(),
-      getDefaults: getControlDefaults,
-      generateInput: generateControlInput,
-      parseResult: parseControlResult,
-      generateSchematic: generateControlSchematic
     }
   };
   
@@ -399,7 +338,7 @@ export async function executeFullPipeline(question, options = {}) {
  * @returns {string[]} - List of supported domains
  */
 export function getSupportedDomains() {
-  return ['Circuits', 'Structural', 'Thermal', 'Fluids', 'Aerospace'];
+  return ['Circuits'];
 }
 
 /**

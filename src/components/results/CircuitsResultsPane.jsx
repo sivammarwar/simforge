@@ -142,6 +142,7 @@ export default function CircuitsResultsPane({
   const [activePlotTab, setActivePlotTab] = useState(null);
   const chartRef = useRef(null);
   const schematicContainerRef = useRef(null);
+  console.log('[FLOW TRACE] 9/9 CircuitsResultsPane.jsx — rendering results', { hasResultsData: !!resultsData, hasSchematic: !!(schematicSVG || resultsData?.schematic_svg) });
 
   const [zoom, setZoom] = useState(1);
   const [pan, setPan] = useState({ x: 0, y: 0 });
@@ -264,6 +265,19 @@ export default function CircuitsResultsPane({
     e.preventDefault();
     setZoom(z => clampZoom(Number((z + (e.deltaY > 0 ? -0.08 : 0.08)).toFixed(2))));
   };
+  
+  // Ref for schematic viewport to attach passive event listener
+  const schematicViewportRef = useRef(null);
+  
+  useEffect(() => {
+    const viewport = schematicViewportRef.current;
+    if (!viewport) return;
+    
+    viewport.addEventListener('wheel', onWheel, { passive: false });
+    return () => {
+      viewport.removeEventListener('wheel', onWheel, { passive: false });
+    };
+  }, [onWheel]);
   const onPointerDown = (e) => {
     setIsPanning(true);
     panStart.current = { x: e.clientX, y: e.clientY, panX: pan.x, panY: pan.y };
@@ -345,8 +359,9 @@ export default function CircuitsResultsPane({
               </div>
             </div>
             <div
+              ref={schematicViewportRef}
               className={`schematic-viewport ${isPanning ? 'panning' : ''}`}
-              onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove}
+              onPointerDown={onPointerDown} onPointerMove={onPointerMove}
               onPointerUp={onPointerUp} onPointerLeave={onPointerUp}
             >
               <div className="schematic-canvas" style={{ transform: `translate(${pan.x}px, ${pan.y}px) scale(${zoom})` }}>

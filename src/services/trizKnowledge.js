@@ -124,7 +124,7 @@ export const TRIZ_PARAMETERS = {
 // Coverage note: this matrix includes the cells most relevant to physical/
 // mechanical/electrical/thermal engineering contradictions, which covers
 // the overwhelming majority of real design trade-offs SimForge sees across
-// Circuits, Structural, Fluids, Thermal, Control, Materials, and Power.
+// Circuits domain trade-offs.
 // Unlisted pairs degrade gracefully to FALLBACK_PRINCIPLES, never to a
 // fabricated principle.
 // ─────────────────────────────────────────────────────────────────────────────

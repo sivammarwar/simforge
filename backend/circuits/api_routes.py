@@ -58,6 +58,7 @@ def _make_llm_caller(provider: str):
 
 @router.post("/solve", response_model=CircuitSolveResponse)
 async def solve_circuit(request: CircuitSolveRequest):
+    print(f"[FLOW TRACE] 3/9 api_routes.py — POST /api/circuits/solve received: {request.question[:80]}")
     task_id = f"circ-{uuid.uuid4().hex[:12]}"
     call_llm = _make_llm_caller(request.provider)
 

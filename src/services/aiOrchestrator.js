@@ -6,13 +6,8 @@
 
 import { callAI } from './llmClient';
 
-// Domain classifiers
+// Circuits-only classifier
 import { classifyCircuit } from './domains/circuits/classifier';
-import { classifyStructural } from './domains/structural/classifier';
-import { classifyThermal } from './domains/thermal/classifier';
-import { classifyFluids } from './domains/fluids/classifier';
-import { classifyAerospace } from './domains/aerospace/classifier';
-import { classifyControl } from './domains/control/classifier';
 
 /**
  * Classify domain from user question
@@ -20,35 +15,17 @@ import { classifyControl } from './domains/control/classifier';
  * @returns {Object} - { domain: string, systemType: string, confidence: number, solver: string }
  */
 export function classifyDomain(question) {
-  // Try each domain classifier
-  const classifiers = [
-    { domain: 'Circuits', classify: classifyCircuit },
-    { domain: 'Structural', classify: classifyStructural },
-    { domain: 'Thermal', classify: classifyThermal },
-    { domain: 'Fluids', classify: classifyFluids },
-    { domain: 'Aerospace', classify: classifyAerospace },
-    { domain: 'Control', classify: classifyControl }
-  ];
-  
-  let bestMatch = null;
-  let bestScore = 0;
-  
-  for (const { domain, classify } of classifiers) {
-    const result = classify(question);
-    if (result.isCircuit || result.isStructural || result.isThermal || result.isFluids || result.isAerospace || result.isControl) {
-      if (result.confidence > bestScore) {
-        bestScore = result.confidence;
-        bestMatch = {
-          domain,
-          systemType: result.circuitType || result.systemType,
-          confidence: result.confidence,
-          solver: result.getSolverName ? result.getSolverName() : null
-        };
-      }
-    }
+  // Circuits-only classification
+  const result = classifyCircuit(question);
+  if (result.isCircuit) {
+    return {
+      domain: 'Circuits',
+      systemType: result.circuitType || result.systemType,
+      confidence: result.confidence,
+      solver: result.getSolverName ? result.getSolverName() : null
+    };
   }
-  
-  return bestMatch || { domain: 'Unknown', systemType: 'Unknown', confidence: 0, solver: null };
+  return { domain: 'Unknown', systemType: 'Unknown', confidence: 0, solver: null };
 }
 
 /**

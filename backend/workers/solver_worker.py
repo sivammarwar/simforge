@@ -66,39 +66,12 @@ def dispatch_solver(self, task_id: str, request: Dict[str, Any]):
         result = None
         
         try:
-            if solver_name == "CalculiX":
-                from solvers.calculix import run_calculix_docker
-                result = run_calculix_docker(task_id, input_file, options)
-            
-            elif solver_name == "OpenFOAM":
-                from solvers.openfoam import run_openfoam_docker
-                result = run_openfoam_docker(task_id, input_file, options)
-            
-            elif solver_name == "Elmer":
-                from solvers.elmer import run_elmer_docker
-                result = run_elmer_docker(task_id, input_file, options)
-            
-            elif solver_name == "XFOIL":
-                from solvers.xfoil import run_xfoil_docker
-                result = run_xfoil_docker(task_id, input_file, options)
-            
-            elif solver_name == "ngspice":
+            if solver_name == "ngspice":
                 from solvers.ngspice import run_ngspice_docker
                 result = run_ngspice_docker(task_id, input_file, options)
             
-            elif solver_name == "python-control":
-                from solvers.python_control import run_control_solver
-                result = run_control_solver(input_file)
-                broadcast_progress(task_id, "Post-processing", 90, solver=solver_name)
-            
-            elif solver_name == "pandapower":
-                from solvers.pandapower import run_power_solver
-                result = run_power_solver(input_file)
-                broadcast_progress(task_id, "Post-processing", 90, solver=solver_name)
-            
             else:
-                from solvers.analytical import run_analytical_solver
-                result = run_analytical_solver(domain, input_file)
+                raise Exception(f"Solver {solver_name} is not supported. Circuits/ngspice is the only registered solver.")
             
             if not result:
                 raise Exception(f"Solver {solver_name} returned None")

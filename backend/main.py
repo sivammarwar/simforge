@@ -19,7 +19,7 @@ load_dotenv()
 from db import init_db, check_db_connection
 
 # API routes
-from api import routes_simulate, routes_material, routes_task, routes_mesh
+from api import routes_simulate, routes_task, routes_chat
 from circuits.api_routes import router as circuits_router
 from websocket.progress_ws import router as ws_router
 
@@ -146,9 +146,8 @@ async def log_requests(request, call_next):
 # ─── ROUTERS ───────────────────────────────────────────────────────────
 
 app.include_router(routes_simulate.router, prefix="/api", tags=["simulate"])
-app.include_router(routes_material.router, prefix="/api", tags=["materials"])
 app.include_router(routes_task.router, prefix="/api", tags=["tasks"])
-app.include_router(routes_mesh.router, prefix="/api", tags=["mesh"])
+app.include_router(routes_chat.router, tags=["chat"])
 app.include_router(circuits_router, tags=["circuits"])
 app.include_router(ws_router, prefix="/ws", tags=["websocket"])
 
@@ -162,14 +161,7 @@ async def root():
         "version": "2.0.0",
         "status": "running",
         "solvers": [
-            "CalculiX (FEA)",
-            "OpenFOAM (CFD)",
-            "Elmer (Multi-physics)",
-            "XFOIL (Aerodynamics)",
-            "ngspice (Circuits)",
-            "python-control (Control Systems)",
-            "pandapower (Power Systems)",
-            "analytical (Physics)"
+            "ngspice (Circuits)"
         ]
     }
 

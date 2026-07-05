@@ -139,6 +139,7 @@ def render_schematic_svg(unified_netlist: str, runs_dir: Path, task_id: str) -> 
     loop or to logs — Lcapy errors don't leak filesystem internals beyond
     the working directory we already control).
     """
+    print(f"[FLOW TRACE] 8/9 schematic.py — render_schematic_svg() called for task_id={task_id}")
     print(f"[Schematic] Input netlist: {unified_netlist}")
     
     try:

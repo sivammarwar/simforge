@@ -204,6 +204,7 @@ def run_ngspice(
     Full flow: AI netlist -> deterministic SPICE translation -> ngspice
     subprocess -> wrdata ASCII parse -> standardized result dict.
     """
+    print(f"[FLOW TRACE] 6/9 ngspice_runner.py — run_ngspice() called for task_id={task_id}, analysis={analysis.get('type', 'operating_point')}")
     try:
         component_lines = lcapy_netlist_to_spice(unified_netlist)
     except NetlistTranslationError as exc:

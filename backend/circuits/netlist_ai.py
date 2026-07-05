@@ -306,6 +306,7 @@ def generate_netlist_with_repair(
     call_llm: Callable[[str], str],
     max_attempts: int = 3,
 ) -> Dict[str, Any]:
+    print(f"[FLOW TRACE] 5/9 netlist_ai.py — generate_netlist_with_repair() called, max_attempts={max_attempts}")
     """
     `call_llm` is injected so this module doesn't hardcode which provider/SDK
     you use — wire it to your existing backend AI client. Signature:

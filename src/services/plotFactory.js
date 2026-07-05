@@ -4,13 +4,8 @@
  * Trusts backend's visualization_type field instead of guessing
  */
 
-// Domain visualizers
+// Domain visualizers — Circuits only
 import { generatePlotConfig as generateCircuitsPlot, getAllPlotConfigs as getAllCircuitsPlots } from './domains/circuits/visualizer';
-import { generatePlotConfig as generateStructuralPlot, getAllPlotConfigs as getAllStructuralPlots } from './domains/structural/visualizer';
-import { generatePlotConfig as generateThermalPlot, getAllPlotConfigs as getAllThermalPlots } from './domains/thermal/visualizer';
-import { generatePlotConfig as generateFluidsPlot, getAllPlotConfigs as getAllFluidsPlots } from './domains/fluids/visualizer';
-import { generatePlotConfig as generateAerospacePlot, getAllPlotConfigs as getAllAerospacePlots } from './domains/aerospace/visualizer';
-import { generateControlPlot, generateAllControlPlots } from './domains/control/visualizer';
 
 /**
  * Generate plot configuration based on domain and visualization type
@@ -21,12 +16,7 @@ import { generateControlPlot, generateAllControlPlots } from './domains/control/
  */
 export function generatePlotConfig(domain, visualizationType, solverResult) {
   const visualizers = {
-    'Circuits': generateCircuitsPlot,
-    'Structural': generateStructuralPlot,
-    'Thermal': generateThermalPlot,
-    'Fluids': generateFluidsPlot,
-    'Aerospace': generateAerospacePlot,
-    'Control': generateControlPlot
+    'Circuits': generateCircuitsPlot
   };
   
   const visualizer = visualizers[domain];
@@ -46,12 +36,7 @@ export function generatePlotConfig(domain, visualizationType, solverResult) {
  */
 export function getAllPlotConfigs(domain, solverResult) {
   const visualizers = {
-    'Circuits': getAllCircuitsPlots,
-    'Structural': getAllStructuralPlots,
-    'Thermal': getAllThermalPlots,
-    'Fluids': getAllFluidsPlots,
-    'Aerospace': getAllAerospacePlots,
-    'Control': generateAllControlPlots
+    'Circuits': getAllCircuitsPlots
   };
   
   const visualizer = visualizers[domain];
@@ -107,11 +92,7 @@ export function generateAllPlotsFromBackendResult(solverResult) {
 export function getPlotType(visualizationType) {
   const typeMap = {
     'time_series': 'Time Series',
-    'frequency_response': 'Bode Plot',
-    'contour_field': 'Contour Plot',
-    'surface': '3D Surface',
-    'vector_field': 'Vector Field',
-    'lift_drag_polar': 'Lift-Drag Polar'
+    'frequency_response': 'Bode Plot'
   };
   
   return typeMap[visualizationType] || visualizationType;
@@ -125,11 +106,7 @@ export function getPlotType(visualizationType) {
 export function isPlotTypeSupported(visualizationType) {
   const supportedTypes = [
     'time_series',
-    'frequency_response',
-    'contour_field',
-    'surface',
-    'vector_field',
-    'lift_drag_polar'
+    'frequency_response'
   ];
   
   return supportedTypes.includes(visualizationType);
@@ -143,26 +120,6 @@ export function isPlotTypeSupported(visualizationType) {
 export function getDefaultPlotConfig(domain) {
   const defaults = {
     'Circuits': {
-      data: [{ type: 'scatter', mode: 'lines', x: [], y: [] }],
-      layout: { title: 'No Data Available' },
-      config: { responsive: true }
-    },
-    'Structural': {
-      data: [{ type: 'heatmap', z: [[]] }],
-      layout: { title: 'No Data Available' },
-      config: { responsive: true }
-    },
-    'Thermal': {
-      data: [{ type: 'heatmap', z: [[]] }],
-      layout: { title: 'No Data Available' },
-      config: { responsive: true }
-    },
-    'Fluids': {
-      data: [{ type: 'heatmap', z: [[]] }],
-      layout: { title: 'No Data Available' },
-      config: { responsive: true }
-    },
-    'Aerospace': {
       data: [{ type: 'scatter', mode: 'lines', x: [], y: [] }],
       layout: { title: 'No Data Available' },
       config: { responsive: true }

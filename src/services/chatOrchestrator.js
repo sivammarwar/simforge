@@ -130,7 +130,14 @@ export async function classifyMessageIntent(promptText, conversationHistory = []
 // ─── STRICT ENGINEERING ANSWER FORMAT ─────────────────────────────────────
 // Enforces: Description -> Intuition -> Mathematics -> Formula/Laws used,
 // numbered per sub-question when the user asks multiple things at once.
-
+//
+// UPDATED: added explicit "go beyond restating scalar metrics" instructions.
+// Previously a model could technically satisfy this format while still being
+// extremely thin (just echoing metric name: value pairs), which is what
+// produced the shallow "I ran the circuits model with ngspice..." style
+// answers users were seeing. The new rules force symbolic derivation,
+// qualitative behavior explanation, and explicit single-vs-combined-stage
+// comparisons for cascaded/multi-part systems.
 export const ENGINEERING_ANSWER_FORMAT_INSTRUCTIONS = `Format your ENTIRE answer using this exact structure.
 
 If the user's message contains multiple distinct sub-questions, repeat the block below once per sub-question, numbered "Question 1", "Question 2", etc., each with its own restated question. If there is only one question, output exactly one unnumbered block (skip the "Question N" heading, go straight to the section headers).
@@ -138,21 +145,23 @@ If the user's message contains multiple distinct sub-questions, repeat the block
 For each question:
 
 **Description**
-Restate, in plain language, what is actually being asked and which values/system are involved.
+Restate, in plain language, what is actually being asked and which values/system are involved. Name the specific topology/system (e.g. "two-stage cascaded RC low-pass filter"), not just the generic domain.
 
 **Intuition**
-The physical/engineering intuition — why the result behaves this way, in plain language, before the math.
+The physical/engineering intuition — why the result behaves this way, in plain language, before the math. Explain the qualitative behavior across the operating range (e.g. how gain and phase change with frequency, how stress redistributes with load, how temperature evolves over time), not just a one-line restatement of the final number.
 
 **Mathematics**
-Every calculation step, in order: symbolic form first, then substituted numeric values, ending in the final numeric result with correct units. Do not skip steps.
+Every calculation step, in order: symbolic form first, then substituted numeric values, ending in the final numeric result with correct units. Do not skip steps. Derive the governing equation(s) yourself — do not just quote the solver's output metrics as if they were the derivation.
 
 **Formula/Laws used**
-Name each law/formula/equation used (e.g. "Ohm's Law: V = IR", "Newton's Second Law: F = ma"), one per line.
+Name each law/formula/equation used (e.g. "Ohm's Law: V = IR", "Newton's Second Law: F = ma"), one per line, with the actual symbolic formula included (not just the name).
 
 Rules:
 - Give REAL numeric answers computed from the actual values in the question. Never say "it depends" if the values are given.
 - If a value is missing, state the assumption you're using and continue.
-- Confident, precise, industrial tone — this is a professional engineering tool.`;
+- Go beyond restating the solver's scalar metrics: derive the governing formula symbolically, substitute the actual numbers step by step, and explain the qualitative behavior. State what idealizations were made (e.g. ideal components, no loading effects) and what real-world deviation to expect as a result.
+- For multi-stage, cascaded, or compound systems, explicitly compare the single-element/single-stage behavior to the combined/overall behavior (e.g. dB/decade roll-off per stage vs overall, total phase shift, combined safety factor) rather than only reporting final numbers.
+- Confident, precise, industrial tone — this is a professional engineering tool, matching the depth of a textbook worked example, not a lab report summary.`;
 
 // ─── FOLLOW-UP ANSWER FORMAT ───────────────────────────────────────────────
 // Used for "followup" intent messages: short questions about the model/results
@@ -209,6 +218,17 @@ ${inputFile?.content ? `\nCURRENT INPUT FILE:\n${inputFile.content}` : ''}`;
   }
 }
 
+// UPDATED: generateStructuredEngineeringAnswer now
+//   1) builds a much richer solverBlock — including netlist/system_type/
+//      assumptions/frequency-or-time-series samples, not just the flat
+//      metrics array — so the model actually has enough material to write a
+//      textbook-depth derivation instead of restating scalar metrics.
+//   2) RETHROWS on failure instead of swallowing the error and returning
+//      null. Silently returning null is what let the thin hardcoded
+//      fallback template (formatResultAnswer in App.jsx) fire on every
+//      single turn without anyone noticing why. The caller (App.jsx) is
+//      responsible for retrying and/or falling back now, but it will at
+//      least SEE the real error in that process.
 export async function generateStructuredEngineeringAnswer({
   promptText,
   solverResult,
@@ -224,9 +244,32 @@ export async function generateStructuredEngineeringAnswer({
     .map(item => `${item.role === 'assistant' ? 'Assistant' : 'User'}: ${item.content}`)
     .join('\n');
 
-  const solverBlock = solverResult
-    ? `SOLVER RESULT (ground truth — use these exact numbers, do not recompute differently):\n${JSON.stringify(solverResult.metrics || [], null, 2)}\n\nSolver summary: ${solverResult.plain_summary || 'n/a'}`
-    : 'No solver was run for this turn — answer from first-principles engineering reasoning and show your own full derivation.';
+  let solverBlock = 'No solver was run for this turn — answer from first-principles engineering reasoning and show your own full derivation.';
+  if (solverResult) {
+    const metricsJSON = JSON.stringify(solverResult.metrics || [], null, 2);
+
+    // Sample a few points from any time/frequency series instead of dumping
+    // potentially hundreds of points into the prompt — enough for the model
+    // to describe the shape of the response (roll-off, settling, etc.)
+    // without blowing up prompt size or hitting token limits.
+    const sampleSeries = (series, label) => {
+      if (!Array.isArray(series) || series.length === 0) return '';
+      const first = series.slice(0, 3);
+      const last = series.slice(-3);
+      const mid = series[Math.floor(series.length / 2)];
+      return `\n\n${label} (sampled — ${series.length} total points): first=${JSON.stringify(first)}, mid=${JSON.stringify(mid)}, last=${JSON.stringify(last)}`;
+    };
+
+    const freqSample = sampleSeries(solverResult.frequency_response, 'Frequency response sample');
+    const timeSample = sampleSeries(solverResult.time_series, 'Time-domain sample');
+
+    solverBlock = `SOLVER RESULT (ground truth — use these exact numbers, do not recompute differently):
+${metricsJSON}
+
+Solver summary: ${solverResult.plain_summary || 'n/a'}
+System type: ${solverResult.system_type || 'n/a'}
+Assumptions made during formulation: ${(solverResult.assumptions || []).join('; ') || 'none stated'}${freqSample}${timeSample}`;
+  }
 
   const fullPrompt = `You are SimForge's engineering explanation engine for the ${domain} domain.
 
@@ -239,32 +282,47 @@ USER QUESTION (this turn):
 ${promptText}
 
 ${solverBlock}
-${inputFile?.content ? `\nINPUT FILE USED:\n${inputFile.content}` : ''}`;
+${inputFile?.content ? `\nNETLIST / INPUT FILE USED:\n${inputFile.content}` : ''}`;
 
-  try {
-    const response = await callAI(provider, fullPrompt, { domain });
-    if (response.error) throw new Error(response.error);
-    return response.content || null;
-  } catch (error) {
-    console.error('[generateStructuredEngineeringAnswer] AI generation failed:', error);
-    return null; // caller falls back to the existing template
+  const response = await callAI(provider, fullPrompt, { domain });
+  if (response.error) throw new Error(response.error);
+  return response.content || null;
+}
+
+// Convenience wrapper: retries generateStructuredEngineeringAnswer once (with
+// a short backoff) before giving up, since the most common failure mode
+// (rate limiting on the 2nd/3rd AI call of the same turn) is transient.
+// Exported so App.jsx can import it directly instead of re-implementing
+// retry logic at every call site.
+export async function generateStructuredEngineeringAnswerWithRetry(args, retries = 1) {
+  let lastError = null;
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    try {
+      const result = await generateStructuredEngineeringAnswer(args);
+      if (result) return result;
+    } catch (err) {
+      lastError = err;
+      console.error(`[generateStructuredEngineeringAnswerWithRetry] attempt ${attempt + 1}/${retries + 1} failed:`, err.message || err);
+      if (attempt < retries) {
+        await new Promise(resolve => setTimeout(resolve, 800 * (attempt + 1)));
+      }
+    }
   }
+  if (lastError) {
+    console.error('[generateStructuredEngineeringAnswerWithRetry] all attempts failed, returning null so caller can use its own fallback template:', lastError.message || lastError);
+  }
+  return null;
 }
 
 // ─── NEW ARCHITECTURE: Single-Call Input File Generation ─────────────────
 
 const SINGLE_CALL_PROMPT = `You are an engineering simulation compiler. Your job is to convert a user's natural-language engineering request directly into a complete, ready-to-run solver input file, AND extract a structured parameter view of that same file for UI display and tuning. You do NOT produce intermediate patches, field/value pairs detached from the file, or a separately-maintained "model object." The parameter list you output is a direct, lossless reflection of the input file — never a parallel data structure that can drift out of sync with it.
 
-STEP 1 — Identify the domain and solver:
-- Circuits → ngspice (.cir netlist)
-- Structural → CalculiX (.inp)
-- Fluids → OpenFOAM (case dictionary set)
-- Aerospace → XFOIL (script/input deck)
-- Thermal → Elmer (.sif)
+STEP 1 — The domain is always Circuits and the solver is always ngspice (.cir netlist).
 
 STEP 2 — Extract every parameter the user gave you (values, units, topology, boundary conditions, materials, sources). Convert units to what the solver expects (e.g. 1µF → 1e-6F in SPICE). For frequency response/AC analysis requests, generate AC sweep parameters (start frequency, stop frequency, number of points) with sensible defaults (e.g., 10 Hz to 100 kHz, 100 points) instead of asking for a single "Input Frequency".
 
-STEP 3 — Fill any parameter the user did NOT specify with a sensible, clearly-labeled domain default (e.g. ambient temp 25°C, ground reference 0V, standard atmosphere for XFOIL). Never invent a value silently.
+STEP 3 — Fill any parameter the user did NOT specify with a sensible, clearly-labeled circuit default (e.g. ground reference 0V, 1kΩ resistors, 1µF capacitors). Never invent a value silently.
 
 STEP 4 — Generate the complete, syntactically valid input file content for the identified solver. It must be directly executable with no further editing. For ngspice circuits:
 - ALWAYS include ALL components: voltage source, resistors, capacitors, etc.
@@ -288,11 +346,30 @@ STEP 4 — Generate the complete, syntactically valid input file content for the
 
 STEP 5 — Build the "parameters" array by parsing your own generated file back out into a UI-friendly, editable list. Every entry must include a "file_anchor" telling the UI exactly what to replace in the file content if the user edits that value (e.g. the line number, or the exact token/line to find-and-replace). This is the ONLY source of truth for the "Formulated Model" panel — there is no separate model object anywhere else in the system.
 
+CRITICAL: Extract EVERY component instance, not just unique types. For a 2-stage RC filter with R1, R2, C1, C2, you must extract ALL FOUR components separately. Do NOT collapse R1 and R2 into a single "R" parameter — each component instance gets its own parameter entry with its own file_anchor.
+
+EXAMPLE for 2-stage RC filter netlist:
+  V1 1 0 DC 5 AC 1
+  R1 1 2 318
+  C1 2 0 1e-6
+  R2 2 3 318
+  C2 3 0 1e-6
+  .ac dec 100 10 100000
+
+Expected parameters array:
+  [
+    {"section": "COMPONENTS", "field": "V1", "value": "5 V", "unit": "V", "file_anchor": {"line": 1, "match": "DC 5"}},
+    {"section": "COMPONENTS", "field": "R1", "value": "318 Ohm", "unit": "Ohm", "file_anchor": {"line": 2, "match": "318"}},
+    {"section": "COMPONENTS", "field": "C1", "value": "1e-6 F", "unit": "F", "file_anchor": {"line": 3, "match": "1e-6"}},
+    {"section": "COMPONENTS", "field": "R2", "value": "318 Ohm", "unit": "Ohm", "file_anchor": {"line": 4, "match": "318"}},
+    {"section": "COMPONENTS", "field": "C2", "value": "1e-6 F", "unit": "F", "file_anchor": {"line": 5, "match": "1e-6"}}
+  ]
+
 OUTPUT FORMAT — respond with ONLY this JSON, nothing else, no markdown fences, no commentary:
 
 {
-  "domain": "Circuits | Structural | Fluids | Aerospace | Thermal",
-  "solver_name": "ngspice | CalculiX | OpenFOAM | XFOIL | Elmer",
+  "domain": "Circuits",
+  "solver_name": "ngspice",
   "system_type": "<specific subtype, e.g. RC_low_pass_filter>",
   "input_file": {
     "filename": "<appropriate filename with correct extension>",
@@ -330,8 +407,8 @@ RULES:
 - Never include explanations, reasoning, or markdown outside the JSON object.`;
 
 export async function generateInputFile(promptText, currentInputFile = null, provider = 'groq') {
-  // Import AI layers dynamically to avoid circular dependencies
-  const { callAI } = await import('./aiLayers.js');
+  // Use llmClient for AI calls (aiLayers.js was removed in Phase 0 cleanup)
+  const { callAI } = await import('./llmClient.js');
   
   // Build context for the AI call
   let context = SINGLE_CALL_PROMPT;
@@ -497,17 +574,6 @@ export function analyzeEngineeringIntent(promptText, fallbackDomain = 'Circuits'
   const domain = detectDomainFromPrompt(promptText, fallbackDomain);
   const categoryRules = [
     {
-      domain: 'Physics',
-      category: 'Classical mechanics',
-      confidence: 0.91,
-      // BUG FIX: spring-pulley SHM must be checked BEFORE standalone wave motion.
-      // The wave pattern matched "amplitude" in spring-mass problems because it runs
-      // earlier in the list. Rules are now ordered so spring/pulley/inclined/ladder/spool
-      // all appear before the wave_motion rule.
-      pattern: /\b(ladder|wall|floor|climb|climbs|slipping|slip|spool|inner radius|outer radius|string wound|critical angle|motion reverses|pulley|atwood|block|blocks|incline|inclined plane|spring|shm|oscillation|collision|momentum|circular motion|centripetal|tension|string|rope)\b/,
-      action: 'Extract masses, constraints, friction/spring values, solve mechanics equations, and render the matching physics visualization or transparent fallback.'
-    },
-    {
       domain: 'Circuits',
       category: 'Voltage divider',
       confidence: 0.97,
@@ -527,110 +593,6 @@ export function analyzeEngineeringIntent(promptText, fallbackDomain = 'Circuits'
       confidence: 0.88,
       pattern: /\bfilter|low.pass|high.pass|cutoff|bode\b/,
       action: 'Size passive components, account for loading, and provide frequency response.'
-    },
-    {
-      domain: 'Structural',
-      category: 'Pulley / block free-body diagrams',
-      confidence: 0.9,
-      pattern: /\b(pulley|hanging mass|block and|blocks and|string|rope|tension|spring|stiffness)\b/,
-      action: 'Select the correct pulley model, including spring terms when present, and draw free-body diagrams.'
-    },
-    {
-      domain: 'Structural',
-      category: 'Truss / frame diagram',
-      confidence: 0.88,
-      pattern: /\b(truss|joint|member force|member forces|portal frame|frame)\b/,
-      action: 'Select the correct structural geometry diagram and avoid a cantilever-beam schematic.'
-    },
-    {
-      domain: 'Structural',
-      category: 'Cantilever beam',
-      confidence: 0.9,
-      pattern: /\bcantilever|beam|deflection|bending\b/,
-      action: 'Extract geometry/load, run beam stress/deflection solver, and check safety factor.'
-    },
-    {
-      domain: 'Structural',
-      category: 'Weld or joint strength',
-      confidence: 0.86,
-      pattern: /\bweld|joint|fillet|throat\b/,
-      action: 'Calculate effective weld area, compare stress to allowable, and flag missing weld length.'
-    },
-    {
-      domain: 'Fluids',
-      category: 'Internal flow',
-      confidence: 0.91,
-      pattern: /\b(sudden\s+(?:pipe\s+)?expansion|pipe expansion|duct|pipe|pressure drop|flow rate|recirculation|streamline|velocity contour|pressure contour|cfd|velocity field)\b/,
-      action: 'Compute Reynolds number, pressure drop, and flow field visualization.'
-    },
-    {
-      domain: 'Semiconductors',
-      category: 'MOSFET TCAD / compact device model',
-      confidence: 0.92,
-      pattern: /\b(mosfet|n-channel|n channel|vgs|vds|threshold voltage|drain current|oxide thickness|channel length|tcad|carrier concentration|electric potential)\b/,
-      action: 'Extract geometry and bias sweeps, run MOSFET compact model, and show I-V curves / device view.'
-    },
-    {
-      domain: 'Aerospace',
-      category: 'Finite wing aerodynamics',
-      confidence: 0.91,
-      pattern: /\b(wing|airfoil|naca|lift|induced drag|aspect ratio|span|chord|angle of attack|aoa)\b/,
-      action: 'Formulate finite-wing geometry, estimate lift distribution, total lift, and induced drag.'
-    },
-    {
-      domain: 'Aerospace',
-      category: 'Nozzle / propulsion',
-      confidence: 0.84,
-      pattern: /\bnozzle|throat|mach|thrust|rocket\b/,
-      action: 'Run isentropic nozzle solver and summarize Mach, pressure, mass flow, and thrust.'
-    },
-    {
-      domain: 'Thermal',
-      category: 'Heat sink thermal budget',
-      confidence: 0.9,
-      pattern: /\b(heat\s*sink|heatsink|thermal resistance|junction|ambient|convection|temperature rise|pcb thermal|thermal via)\b/,
-      action: 'Extract heat load and temperature limits, calculate thermal resistance budget, and size the cooling path.'
-    },
-    {
-      domain: 'Control',
-      category: 'PID control tuning',
-      confidence: 0.9,
-      pattern: /\b(pid|controller|transfer function|settling|overshoot|closed.loop|step response|stability)\b/,
-      action: 'Extract plant and response requirements, synthesize PID gains, and estimate closed-loop response.'
-    },
-    {
-      domain: 'Materials',
-      category: 'Fatigue / material safety',
-      confidence: 0.88,
-      pattern: /\b(material|fatigue|yield|ultimate|endurance|alloy|steel|aluminum|bracket|cycles)\b/,
-      action: 'Extract material strengths and stress cycle, calculate utilization and safety factor.'
-    },
-    {
-      domain: 'Power',
-      category: 'Power and energy balance / load flow',
-      confidence: 0.88,
-      pattern: /\b(load flow|power flow|slack bus|pv bus|pq bus|bus voltages|line losses|reactive power|single-line|single line|5-bus|5 bus|transformer|primary voltage|secondary voltage|kwh|energy|efficiency|losses|microgrid|power system|power network)\b/,
-      action: 'Extract electrical ratings, calculate power flow, losses, efficiency, and practical sizing metrics.'
-    },
-    // BUG FIX: wave_motion pattern moved to LAST position in the Physics rules.
-    // Previously it appeared after the general classical-mechanics rule, but the
-    // general rule did not match standalone wave problems. The real bug was that
-    // "amplitude" in a spring-pulley question was caught here first.
-    // Now: spring/pulley/inclined/spool all match via the classical-mechanics rule
-    // above (which now excludes "wave" and "standing wave" keywords but still catches
-    // "amplitude" only in combination with spring/pulley context via detectDomainFromPrompt).
-    // A standalone wave problem ("a wave has frequency 10Hz, wavelength 2m") still
-    // reaches this rule because detectDomainFromPrompt will return Physics and none of
-    // the earlier rules match "wave" or "wavelength" explicitly.
-    {
-      domain: 'Physics',
-      category: 'Wave motion',
-      confidence: 0.88,
-      // BUG FIX: pattern now requires BOTH a wave-specific keyword AND at least one
-      // quantitative wave term, OR an explicit wave-problem framing.
-      // This prevents "amplitude" alone (common in spring/SHM problems) from routing here.
-      pattern: /\b(standing wave|wavelength|wave speed|wave number|transverse wave|longitudinal wave)\b|\b(wave|waves)\b.*\b(frequency|period|speed|number)\b|\b(frequency|period)\b.*\b(wave|waves)\b/,
-      action: 'Extract wave parameters, calculate wave speed, period, wave number, and generate wave profile.'
     }
   ];
 
@@ -673,20 +635,7 @@ export function getCasualResponse(promptText) {
 export function detectDomainFromPrompt(promptText, currentDomain) {
   const lower = promptText.toLowerCase();
   const patterns = [
-    ['Semiconductors', /\b(mosfet|n-channel|n channel|vgs|vds|threshold voltage|drain current|oxide thickness|channel length|tcad|carrier concentration|electric potential|semiconductor|transistor|gate|drain|source|doping|mobility|channel)\b/i],
-    ['Fluids', /\b(sudden\s+(?:pipe\s+)?expansion|pipe expansion|inlet diameter|outlet diameter|flow rate|recirculation|streamline|velocity contour|pressure contour|duct|fluid|viscosity|air flowing|water flow|cfd|foam|velocity field|pressure drop|no-slip|pipe)\b/i],
-    ['Power', /\b(load flow|power flow|slack bus|pv bus|pq bus|bus voltages|line losses|reactive power|single-line|single line|5-bus|5 bus|power network|transformer|primary voltage|secondary voltage|kwh|energy cost|power factor|microgrid|power system|efficiency and losses)\b/i],
-    // BUG FIX: Physics pattern no longer includes bare "wave" or "amplitude" since those
-    // alone cannot distinguish a physics wave problem from a circuits amplitude question.
-    // Spring/pulley/incline/spool keywords still present and now catch those problems
-    // correctly BEFORE wave routing can happen.
-    ['Physics', /\b(ladder|smooth wall|rough floor|floor friction|climb|climbs|slipping|slip occurs|spool|inner radius|outer radius|string wound|critical angle|motion reverses|11th|12th|class\s*11|class\s*12|physics|atwood|pulley|inclined plane|incline|slope|spring|shm|oscillation|collision|momentum|circular motion|centripetal|standing wave|wavelength|wave speed|tension|string|rope|block a|block b)\b/i],
-    ['Thermal', /\b(thermal|heat sink|heatsink|junction|ambient|convection|temperature rise|pcb thermal|thermal via)\b/i],
-    ['Control', /\b(pid|controller|transfer function|settling|overshoot|closed-loop|step response|stability)\b/i],
-    ['Materials', /\b(material|material selection|ashby|specific strength|wing spar|ti-6al-4v|7075|4140|fatigue|yield|ultimate|endurance|alloy|aerospace bracket|cycles)\b/i],
-    ['Aerospace', /\b(aerospace|propulsion|nozzle|rocket|thrust|expansion ratio|mach|throat|wing|airfoil|naca|lift|drag|span|chord|angle of attack|aoa|uav)\b/i],
     ['Circuits', /\b(buck|dc.?dc|converter|ripple|inductor|capacitor|circuit|netlist|spice|esr|voltage divider|rc filter|op.?amp)\b/i],
-    ['Structural', /\b(steel|cantilever|beam|fea|mesh|displacement|stress|weld|bracket|truss|joint|member force|member forces|portal frame|frame)\b/i],
   ];
 
   const match = patterns.find(([, regex]) => regex.test(lower));
@@ -714,63 +663,11 @@ const fieldAliases = (section, fieldName) => {
     'Capacitor (C1)': ['c1', 'capacitor', 'capacitance'],
     'ESR (C1)': ['esr', 'capacitor esr'],
     'Switch freq': ['switching frequency', 'switch freq', 'frequency', 'fsw'],
-    'Length': ['length', 'beam length'],
-    'Width': ['width', 'beam width'],
-    'Height': ['height', 'thickness', 'beam height'],
-    'Magnitude': ['force', 'load magnitude', 'load', 'magnitude'],
-    'Diameter': ['diameter', 'duct diameter'],
-    'Inlet diameter': ['inlet diameter', 'd1', 'upstream diameter'],
-    'Outlet diameter': ['outlet diameter', 'd2', 'downstream diameter'],
-    'Flow rate': ['flow rate', 'volumetric flow rate', 'q'],
-    'Inlet velocity': ['inlet velocity', 'velocity', 'speed'],
-    'Gate Length': ['gate length', 'lgate', 'l gate'],
-    'Channel Length': ['channel length', 'gate length', 'l channel'],
-    'Oxide Thickness': ['oxide thickness', 'tox'],
-    'Gate Voltage': ['gate voltage', 'vgs'],
-    'Drain Voltage': ['drain voltage', 'vds'],
-    'Gate sweep': ['gate sweep', 'vgs sweep', 'vgs range'],
-    'Drain sweep': ['drain sweep', 'vds sweep', 'vds range'],
-    'Wingspan': ['wingspan', 'span', 'b'],
-    'Chord': ['chord', 'c'],
-    'Airspeed': ['airspeed', 'speed', 'velocity', 'flight speed'],
-    'Angle of attack': ['angle of attack', 'aoa', 'alpha'],
-    'Air density': ['air density', 'density', 'rho'],
-    'Dynamic viscosity': ['dynamic viscosity', 'viscosity', 'mu'],
-    'Oswald efficiency': ['oswald efficiency', 'efficiency factor', 'e'],
-    'Throat Diameter': ['throat diameter', 'throat', 'dt'],
-    'Expansion ratio': ['expansion ratio', 'epsilon', 'area ratio'],
-    'Divergent Angle': ['divergent angle', 'nozzle angle', 'half angle'],
-    'Chamber Pressure': ['chamber pressure', 'pc'],
-    'Chamber Temperature': ['chamber temperature', 'tc'],
-    'Specific heat ratio': ['specific heat ratio', 'gamma'],
-    'Gas constant': ['gas constant', 'r gas']
-    ,
-    'Power dissipation': ['power dissipation', 'heat load', 'heat', 'power', 'q'],
-    'Ambient temperature': ['ambient temperature', 'ambient', 'ta'],
-    'Maximum junction temperature': ['maximum junction temperature', 'max junction', 'junction temperature', 'tmax', 'tj max'],
-    'Junction-to-case resistance': ['junction to case', 'junction-to-case', 'rjc'],
-    'Interface resistance': ['interface resistance', 'thermal interface', 'r interface'],
-    'Convection coefficient': ['convection coefficient', 'h coefficient', 'h'],
-    'Transfer function': ['transfer function', 'plant', 'g s', 'g(s)'],
-    'Settling time': ['settling time', 'ts'],
-    'Maximum overshoot': ['maximum overshoot', 'overshoot'],
-    'Kp': ['kp', 'proportional gain'],
-    'Ki': ['ki', 'integral gain'],
-    'Kd': ['kd', 'derivative gain'],
-    'Yield strength': ['yield strength', 'yield'],
-    'Ultimate strength': ['ultimate strength', 'ultimate', 'uts'],
-    'Endurance strength': ['endurance strength', 'endurance limit', 'se'],
-    'Maximum stress': ['maximum stress', 'max stress', 'sigma max'],
-    'Minimum stress': ['minimum stress', 'min stress', 'sigma min'],
-    'Cycles': ['cycles', 'life'],
-    'Primary voltage': ['primary voltage', 'v1', 'vin'],
-    'Secondary voltage': ['secondary voltage', 'v2', 'vout'],
-    'Secondary current': ['secondary current', 'i2', 'load current'],
-    'Bus count': ['bus count', 'number of buses', 'buses'],
-    'Slack buses': ['slack bus', 'slack buses'],
-    'PV buses': ['pv bus', 'pv buses'],
-    'PQ buses': ['pq bus', 'pq buses'],
-    'Efficiency': ['efficiency', 'eta']
+    'Duty cycle': ['duty cycle', 'duty', 'd'],
+    'Cutoff frequency': ['cutoff frequency', 'cutoff', 'fc', 'corner frequency'],
+    'Input frequency': ['input frequency', 'frequency', 'f'],
+    'Resistor (R)': ['r', 'resistor', 'resistance'],
+    'Capacitor (C)': ['c', 'capacitor', 'capacitance']
   };
   return [...new Set([...base, ...(aliases[fieldName] || []), `${normalizeLabel(section)} ${normalized}`])]
     .filter(alias => alias && alias.length > 0)

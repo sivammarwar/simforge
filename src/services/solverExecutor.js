@@ -17,7 +17,7 @@ import { getPlots } from './plotEngine';
 /**
  * Execute solver and generate plots for a given domain and model
  * 
- * @param {string} domain - The engineering domain (e.g., 'Circuits', 'Physics')
+ * @param {string} domain - The engineering domain (e.g., 'Circuits')
  * @param {string} systemType - The specific system type (e.g., 'Buck Converter')
  * @param {object} modelData - The complete model state with all parameters
  * @param {object} sceneGraph - The scene_graph from the AI explanation phase
@@ -334,16 +334,7 @@ export function extractSolverMetrics(solverResult) {
  */
 export function getDomainPlotTypes(domain) {
   const plotTypes = {
-    Circuits: ['Time Domain', 'Frequency Domain'],
-    Physics: ['Displacement', 'Velocity', 'Acceleration'],
-    Structural: ['Shear Force', 'Bending Moment', 'Deflection'],
-    Fluids: ['Velocity Contour', 'Pressure Distribution', 'Streamlines'],
-    Semiconductors: ['I-V Characteristic', 'Band Diagram', 'Carrier Profile'],
-    Aerospace: ['Lift Distribution', 'Drag Polar', 'Mach Number'],
-    Thermal: ['Temperature Profile', 'Transient Response'],
-    Control: ['Step Response', 'Bode Plot', 'Root Locus'],
-    Materials: ['Stress-Strain', 'S-N Diagram'],
-    Power: ['Efficiency Curve', 'Voltage Regulation']
+    Circuits: ['Time Domain', 'Frequency Domain']
   };
   
   return plotTypes[domain] || [];

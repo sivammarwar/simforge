@@ -74,14 +74,10 @@ const containsAny = (text, words) => words.filter((word) => {
 });
 
 const DOMAIN_ALIASES = {
-  Aerodynamics: 'Fluids',
-  CFD: 'Fluids',
-  FEA: 'Structural',
-  Structures: 'Structural',
-  Materials: 'Materials',
-  Thermal: 'Thermal',
-  Control: 'Control',
-  'Power Systems': 'Power'
+  Electronics: 'Circuits',
+  Circuit: 'Circuits',
+  SPICE: 'Circuits',
+  ngspice: 'Circuits'
 };
 
 const tradeoffWords = [

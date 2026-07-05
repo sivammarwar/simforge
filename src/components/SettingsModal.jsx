@@ -1,6 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import { X, Key, Shield, HelpCircle, HardDrive, Settings, FileText, Check } from 'lucide-react';
-import { configureAIKeys, getAIKeys } from '../services/aiLayers';
+
+function getAIKeys() {
+  try {
+    return JSON.parse(localStorage.getItem('simforge_ai_keys') || '{}');
+  } catch {
+    return {};
+  }
+}
+
+function configureAIKeys(keys) {
+  try {
+    localStorage.setItem('simforge_ai_keys', JSON.stringify(keys));
+  } catch {
+    // ignore
+  }
+}
 
 export default function SettingsModal({
   isOpen,
