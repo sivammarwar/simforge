@@ -34,7 +34,8 @@ import { processTuningIteration } from './services/liveTuningLoop';
 
 // NEW ARCHITECTURE: Modular Domain Pipeline
 import { executeFullPipeline, processQuestion, runSimulation, generatePlots, generateSchematic, getSupportedDomains } from './services/domainPipeline';
-import { solveCircuitQuestion, looksLikeCircuitsQuestion } from './services/circuitsClient';
+import { solveCircuitQuestion, solveCircuitQuestionStream, looksLikeCircuitsQuestion } from './services/circuitsClient';
+import { parseChatCommand } from './services/chatCommandParser';
 
 // LEGACY IMPORTS - Kept for backward compatibility during migration
 import { OptimizedContextBuilder } from './services/contextServices';
@@ -348,6 +349,16 @@ export default function App() {
     }));
   };
 
+  // Update a specific message's content in-place (used for streaming stage updates).
+  const updateSessionMessageContent = (sessId, msgId, updater) => {
+    setSessionMessages(prev => ({
+      ...prev,
+      [sessId]: (prev[sessId] || []).map(m =>
+        m.id === msgId ? { ...m, ...updater(m) } : m
+      )
+    }));
+  };
+
   // Build a bounded conversation-history array (role/content pairs) from a session's
   // existing messages, suitable for sending to the AI backend as context. This must be
   // captured BEFORE the new user message is appended to session state, so it represents
@@ -624,6 +635,64 @@ export default function App() {
     }
   };
 
+  // PHASE 4: Handle chat-driven edit commands (bidirectional control)
+  const _handleChatEditCommand = (cmd, sessId, inputFile, parameters) => {
+    const param = cmd.param;
+    if (!param || !param.file_anchor) {
+      appendSessionMessage(sessId, {
+        id: `m-${Date.now()}-ai-cmd`, sender: 'ai',
+        text: `I found **${cmd.field}** in the model but can't edit it (no file anchor). Try editing it in the Formulated Model pane.`,
+        timestamp: formatTimestamp(new Date()),
+      });
+      return;
+    }
+
+    const lines = (inputFile?.content || '').split('\n');
+    const targetLine = param.file_anchor.line - 1;
+    if (targetLine < 0 || targetLine >= lines.length) {
+      appendSessionMessage(sessId, {
+        id: `m-${Date.now()}-ai-cmd`, sender: 'ai',
+        text: `Can't locate **${cmd.field}** in the input file for editing.`,
+        timestamp: formatTimestamp(new Date()),
+      });
+      return;
+    }
+
+    const oldLine = lines[targetLine];
+    const newLine = oldLine.replace(param.file_anchor.match, cmd.newValue);
+    if (oldLine === newLine) {
+      appendSessionMessage(sessId, {
+        id: `m-${Date.now()}-ai-cmd`, sender: 'ai',
+        text: `Couldn't apply the edit — the value **${cmd.newValue}** doesn't match what's in the file. The current value might have changed.`,
+        timestamp: formatTimestamp(new Date()),
+      });
+      return;
+    }
+
+    lines[targetLine] = newLine;
+    const updatedInputFile = { ...inputFile, content: lines.join('\n') };
+    updateSessionInputFile(sessId, updatedInputFile);
+
+    const updatedParameters = parameters.map(p => {
+      if (p.section === param.section && p.field === param.field) {
+        return { ...p, value: cmd.newValue, tag: 'edited', oldValue: p.value,
+          file_anchor: { ...p.file_anchor, match: cmd.newValue } };
+      }
+      return p;
+    });
+    setSessionParameters(prev => ({ ...prev, [sessId]: updatedParameters }));
+
+    const editMsg = `Updated **${cmd.field}** from **${cmd.oldValue}** to **${cmd.newValue}**.`;
+    appendSessionMessage(sessId, {
+      id: `m-${Date.now()}-ai-cmd`, sender: 'ai', text: editMsg,
+      timestamp: formatTimestamp(new Date()), animated: true
+    });
+
+    if (cmd.shouldRun) {
+      setTimeout(() => handleRunSimulation(true), 500);
+    }
+  };
+
   // NEW ARCHITECTURE: Handle message using modular domain pipeline (DEFAULT)
   const handleSendMessage = async (text, options = {}) => {
     const { useNewPipeline = true, clarifyOnly = false } = options;
@@ -658,7 +727,26 @@ export default function App() {
     
     appendSessionMessage(targetSessionId, userMsg);
 
-    // ── SMART ROUTING ──────────────────────────────────────────────────
+    // ── PHASE 4: BIDIRECTIONAL CONTROL ────────────────────────────
+    const currentParams = sessionParameters[targetSessionId] || [];
+    const currentInputFile = sessionInputFiles[targetSessionId] || null;
+    const currentResults = sessionResults[targetSessionId] || null;
+    const cmd = parseChatCommand(text, currentParams, currentInputFile, currentResults);
+    if (cmd) {
+      if (cmd.type === 'display') {
+        appendSessionMessage(targetSessionId, {
+          id: `m-${Date.now()}-ai-cmd`, sender: 'ai', text: cmd.reply,
+          timestamp: formatTimestamp(new Date()), animated: true
+        });
+        return;
+      }
+      if (cmd.type === 'edit') {
+        _handleChatEditCommand(cmd, targetSessionId, currentInputFile, currentParams);
+        return;
+      }
+    }
+
+    // ── SMART ROUTING ──────────────────────────────────────────────
     // Classify intent BEFORE running the heavy solver pipeline. Handles
     // smalltalk ("hi"), personal asides ("how are you"), genuine NEW
     // engineering requests, FOLLOW-UP questions about the model/results
@@ -784,21 +872,107 @@ export default function App() {
         // conversationHistory is forwarded so the backend can maintain context across
         // turns (see services/circuitsClient.js — the backend endpoint /api/circuits/solve
         // needs to accept and use the `history` field).
-        console.log('[Circuits Pipeline] Calling solveCircuitQuestion');
-        const circuitResult = await solveCircuitQuestion(engineeringText, selectedProvider, conversationHistory);
+        console.log('[Circuits Pipeline] Calling solveCircuitQuestionStream');
+        const stageLines = [];
+        const circuitResult = await solveCircuitQuestionStream(
+          engineeringText, selectedProvider,
+          (ev) => {
+            const s = ev.stage, st = ev.status;
+            const sd = ev.sub_domain || '';
+            const icons = { call1:'🧠', classification:'🔍', input_generation:'📝', execution:'⚡', schematic:'📐', proof_of_work:'🔬', answer_generation:'✍️' };
+            const ic = icons[s] || '⚙️';
+            const sdLbl = {
+              analog_sim: 'Analog',
+              symbolic_analysis: 'Symbolic',
+              digital_logic: 'Digital',
+              numerical_processing: 'Numerical',
+              control_systems: 'Control',
+              rf_em: 'RF/EM',
+              pcb_realization: 'PCB',
+              fpga_realization: 'FPGA',
+              semiconductor_device: 'Semi',
+              physical_design: 'Phys Design',
+            }[sd] || 'Analysis';
+            let line = null;
+            if (s === 'call1' && st === 'start') line = '🧠 Call 1: Selecting sub-domains + generating inputs (1 AI call)...';
+            else if (s === 'call1' && st === 'done') line = `🧠 Call 1 done: ${ev.detail || 'selections ready'}`;
+            else if (s === 'call1' && st === 'failed') line = `🧠 Call 1 failed: ${ev.error}`;
+            else if (s === 'call1' && st === 'out_of_scope') line = '🧠 Question is out of scope for circuits analysis.';
+            else if (s === 'call1' && st === 'no_selection') line = '🧠 No sub-domains selected for this question.';
+            else if (s === 'classification' && st === 'done') {
+              const idx = ev.total_selections > 1 ? ` [${ev.selection_index + 1}/${ev.total_selections}]` : '';
+              line = `${ic} Classified → ${ev.sub_domain} / ${ev.tool}${idx}`;
+            }
+            else if (s === 'input_generation' && st === 'start') line = `${ic} ${sdLbl}: generating input...`;
+            else if (s === 'input_generation' && st === 'attempt_start') line = `${ic} ${sdLbl}: attempt ${ev.attempt}/${ev.max_attempts}`;
+            else if (s === 'input_generation' && st === 'repair_needed') line = `${ic} ${sdLbl}: repairing (attempt ${ev.attempt})...`;
+            else if (s === 'input_generation' && st === 'done') line = `${ic} ${sdLbl}: input ready (${ev.system_type || 'ok'})`;
+            else if (s === 'input_generation' && st === 'failed') line = `${ic} ${sdLbl}: input failed: ${ev.error}`;
+            else if (s === 'execution' && st === 'start') line = `${ic} ${sdLbl}: running ${ev.tool}...`;
+            else if (s === 'execution' && st === 'done') line = `${ic} ${sdLbl}: execution complete`;
+            else if (s === 'execution' && st === 'failed') line = `${ic} ${sdLbl}: execution failed: ${ev.error}`;
+            else if (s === 'schematic' && st === 'start') line = `${ic} ${sdLbl}: rendering schematic...`;
+            else if (s === 'schematic' && st === 'done') line = `${ic} ${sdLbl}: schematic rendered`;
+            else if (s === 'schematic' && st === 'failed') line = `${ic} ${sdLbl}: schematic failed: ${ev.error}`;
+            else if (s === 'proof_of_work' && st === 'done') line = `${ic} ${sdLbl}: verified: ${ev.detail}`;
+            else if (s === 'proof_of_work' && st === 'failed') line = `${ic} ${sdLbl}: check failed: ${ev.detail}`;
+            else if (s === 'answer_chunk') return;
+            else if (s === 'answer_generation' && st === 'start') line = '✍️ Call 2: Generating structured answer (1 AI call)...';
+            else if (s === 'answer_generation' && st === 'failed') line = `✍️ Answer generation failed: ${ev.error}`;
+            else if (s === 'answer_done') line = '📄 Structured answer ready';
+            if (line) {
+              stageLines.push(line);
+              updateSessionMessageContent(targetSessionId, loadingMsgId, (m) => ({
+                text: stageLines.join('\n'),
+              }));
+            }
+          }
+        );
         console.log('[Circuits Pipeline] Got result:', circuitResult);
-        console.log('[Circuits Pipeline] frequency_response:', circuitResult.frequency_response);
-        console.log('[Circuits Pipeline] schematic_svg:', circuitResult.schematic_svg);
-        console.log('[Circuits Pipeline] schematic_error:', circuitResult.schematic_error);
-        console.log('[Circuits Pipeline] time_series:', circuitResult.time_series);
         
-        // Convert metrics to parameters format expected by rest of app
-        const parameters = (circuitResult.metrics || []).map(m => ({
-          field: m.name,
-          value: m.value,
-          unit: '',
-          tag: 'default'
-        }));
+        if (!circuitResult) {
+          throw new Error('Circuit pipeline returned no result. The backend may have encountered an error.');
+        }
+        
+        // Convert metrics + netlist into editable parameters for the ModelPane playground.
+        // Component values (R1, C1, V1, etc.) get editable=true with file_anchor pointing
+        // to the exact line/token in the netlist so sliders and inline edits work.
+        // Computed metrics (cutoff_frequency, Transfer Function, etc.) are read-only results.
+        const netlistLines = (circuitResult.netlist || '').split('\n');
+        const parameters = [];
+        const componentRegex = /^([A-Z]+\d+)\s+(\d+)\s+(\d+)\s+(.+)$/i;
+        
+        for (const m of (circuitResult.metrics || [])) {
+          // Try to find this metric's value in the netlist to build a file_anchor
+          let foundAnchor = null;
+          let isComponent = false;
+          
+          for (let i = 0; i < netlistLines.length; i++) {
+            const line = netlistLines[i].trim();
+            if (!line || line.startsWith('*') || line.startsWith('.')) continue;
+            const match = line.match(componentRegex);
+            if (match) {
+              const ref = match[1]; // e.g. R1, C1, V1
+              const valueStr = match[4].trim();
+              // Check if this metric name matches the component reference
+              if (m.name === ref || m.name === ref.replace(/(\d+)$/, ' ($1)')) {
+                foundAnchor = { line: i + 1, match: valueStr.split(/\s+/)[0] };
+                isComponent = true;
+                break;
+              }
+            }
+          }
+          
+          parameters.push({
+            field: m.name,
+            value: String(m.value),
+            unit: '',
+            tag: isComponent ? 'stated' : 'default',
+            editable: isComponent,
+            section: isComponent ? 'COMPONENTS' : 'RESULTS',
+            ...(foundAnchor ? { file_anchor: foundAnchor } : {})
+          });
+        }
         
         console.log('[Circuits Pipeline] Converted parameters:', parameters);
         
@@ -813,6 +987,7 @@ export default function App() {
         
         pipelineResult = {
           success: true,
+          _structuredAnswer: circuitResult._structured_answer || null,
           processingResult: {
             classification: {
               domain: 'Circuits',
@@ -954,38 +1129,43 @@ export default function App() {
         ? simulationResult.parsedResult
         : null;
 
-      const structuredAnswer = await generateStructuredEngineeringAnswerWithRetry({
-        promptText: engineeringText,
-        solverResult: solverResultForAnswer,
-        inputFile: processingResult.inputFile,
-        domain: processingResult.classification.domain,
-        conversationHistory,
-        provider: selectedProvider
-      });
+      let explanationText;
+      if (pipelineResult._structuredAnswer) {
+        explanationText = pipelineResult._structuredAnswer;
+      } else {
+        const structuredAnswer = await generateStructuredEngineeringAnswerWithRetry({
+          promptText: engineeringText,
+          solverResult: solverResultForAnswer,
+          inputFile: processingResult.inputFile,
+          domain: processingResult.classification.domain,
+          conversationHistory,
+          provider: selectedProvider
+        });
 
-      const fallbackOpening = getConversationalOpening(
-        processingResult.classification.domain,
-        processingResult.inputFile,
-        engineeringText
-      );
+        const fallbackOpening = getConversationalOpening(
+          processingResult.classification.domain,
+          processingResult.inputFile,
+          engineeringText
+        );
 
-      const explanationText = structuredAnswer
-        ? structuredAnswer
-        : solverResultForAnswer
-          ? formatResultAnswer({
-              domain: processingResult.classification.domain,
-              model: processingResult.inputFile,
-              results: solverResultForAnswer,
-              summary: getConversationalResultSummary(processingResult.classification.domain, processingResult.inputFile, solverResultForAnswer),
-              solverName: getDomainConfig(processingResult.classification.domain)?.solver || 'solver'
-            })
-          : formatEngineeringAnswer({
-              domain: processingResult.classification.domain,
-              model: processingResult.inputFile,
-              promptText: engineeringText,
-              flowPlan: null,
-              opening: fallbackOpening
-            });
+        explanationText = structuredAnswer
+          ? structuredAnswer
+          : solverResultForAnswer
+            ? formatResultAnswer({
+                domain: processingResult.classification.domain,
+                model: processingResult.inputFile,
+                results: solverResultForAnswer,
+                summary: getConversationalResultSummary(processingResult.classification.domain, processingResult.inputFile, solverResultForAnswer),
+                solverName: getDomainConfig(processingResult.classification.domain)?.solver || 'solver'
+              })
+            : formatEngineeringAnswer({
+                domain: processingResult.classification.domain,
+                model: processingResult.inputFile,
+                promptText: engineeringText,
+                flowPlan: null,
+                opening: fallbackOpening
+              });
+      }
 
       const aiMsg = {
         id: `m-${Date.now()}-ai`,

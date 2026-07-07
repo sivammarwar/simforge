@@ -223,6 +223,55 @@ export default function CircuitsResultsPane({
         },
       ];
     }
+    // Pole-zero plot for symbolic analysis results
+    if (resultsData?.metrics && !isTransient && !isAC) {
+      const polesMetric = resultsData.metrics.find(m => m.name === 'Poles (numeric)' || m.name === 'Poles');
+      const zerosMetric = resultsData.metrics.find(m => m.name === 'Zeros (numeric)' || m.name === 'Zeros');
+      if (polesMetric || zerosMetric) {
+        const parseComplexList = (val) => {
+          if (!val) return [];
+          try {
+            const str = typeof val === 'string' ? val : JSON.stringify(val);
+            const cleaned = str.replace(/[\[\]']/g, '').trim();
+            if (!cleaned) return [];
+            return cleaned.split(',').map(s => {
+              const num = parseFloat(s.trim());
+              return isNaN(num) ? null : num;
+            }).filter(v => v !== null);
+          } catch { return []; }
+        };
+        const poles = parseComplexList(polesMetric?.value);
+        const zeros = parseComplexList(zerosMetric?.value);
+        if (poles.length || zeros.length) {
+          const traces = [];
+          if (poles.length) {
+            traces.push({
+              x: poles, y: new Array(poles.length).fill(0),
+              type: 'scatter', mode: 'markers',
+              name: 'Poles', marker: { symbol: 'x', size: 12, color: '#EF4444' },
+            });
+          }
+          if (zeros.length) {
+            traces.push({
+              x: zeros, y: new Array(zeros.length).fill(0),
+              type: 'scatter', mode: 'markers',
+              name: 'Zeros', marker: { symbol: 'circle', size: 10, color: '#3B82F6' },
+            });
+          }
+          return [{
+            id: 'polezero', title: 'Pole-Zero Plot',
+            traces,
+            layout: {
+              xaxis: { title: 'Real', color: '#8C929E', gridcolor: '#1C2026', zeroline: true, zerolinewidth: 1 },
+              yaxis: { title: 'Imaginary', color: '#8C929E', gridcolor: '#1C2026', zeroline: true, zerolinewidth: 1 },
+              paper_bgcolor: 'transparent', plot_bgcolor: 'transparent',
+              font: { color: '#8C929E', size: 10 }, margin: { t: 20, r: 20, b: 40, l: 50 },
+              legend: { orientation: 'h', y: -0.2 },
+            },
+          }];
+        }
+      }
+    }
     return [];
   };
 

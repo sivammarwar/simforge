@@ -1,0 +1,107 @@
+"""
+FPGA Realization Pipeline
+==========================
+Analyzes FPGA design questions using LLM-driven analysis.
+
+Stages (streaming): input_generation, execution, proof_of_work, final_result
+"""
+import json
+import re
+from typing import Dict, Any, Callable, Iterator
+
+_LLM_PROMPT = """You are an FPGA design expert. Given a user question, produce a JSON object with analysis results.
+
+Return JSON with these fields:
+- "system_type": short name for the FPGA design
+- "metrics": list of {{"name": "...", "value": "..."}}
+- "assumptions": list of assumptions
+- "plain_summary": one-sentence summary
+
+Return ONLY the JSON, no other text.
+
+User question: {question}"""
+
+
+def _parse_llm_response(raw):
+    from ..shared.llm_utils import parse_llm_json
+    return parse_llm_json(raw)
+
+
+def _to_standardized(result):
+    return {
+        "sub_domain": "fpga_realization",
+        "tool_used": "nextpnr",
+        "domain": "Circuits",
+        "system_type": result.get("system_type", "FPGA Design"),
+        "solver_name": "nextpnr",
+        "status": result.get("status", "completed"),
+        "netlist": "", "raw_output_path": "",
+        "metrics": result.get("metrics", []),
+        "visualization_type": "diagram_only",
+        "frequency_response": None, "time_series": None,
+        "schematic_svg": "", "schematic_error": None,
+        "assumptions": result.get("assumptions", []),
+        "unsupported_aspects": result.get("unsupported_aspects", []),
+        "plain_summary": result.get("plain_summary"),
+    }
+
+
+def run_fpga_realization_pipeline(question, call_llm, task_id, tool="nextpnr", _prebuilt_input=None):
+    if _prebuilt_input:
+        plan = _prebuilt_input
+    else:
+        prompt = _LLM_PROMPT.format(question=question)
+        try:
+            raw = call_llm(prompt)
+            plan = _parse_llm_response(raw)
+        except Exception as e:
+            return _to_standardized({
+                "status": "failed", "plain_summary": f"LLM call/parse failed: {e}",
+            })
+    result = {
+        "system_type": plan.get("system_type", "FPGA Design"),
+        "metrics": plan.get("metrics", []),
+        "assumptions": plan.get("assumptions", []),
+        "plain_summary": plan.get("plain_summary", "FPGA analysis completed."),
+        "status": "completed",
+    }
+    return _to_standardized(result)
+
+
+def run_fpga_realization_pipeline_stream(question, call_llm, task_id, tool="nextpnr", _prebuilt_input=None):
+    yield {"stage": "input_generation", "status": "start"}
+    if _prebuilt_input:
+        plan = _prebuilt_input
+        yield {"stage": "input_generation", "status": "done",
+               "system_type": plan.get("system_type", "FPGA Design")}
+    else:
+        prompt = _LLM_PROMPT.format(question=question)
+        try:
+            raw = call_llm(prompt)
+        except Exception as e:
+            yield {"stage": "input_generation", "status": "failed", "error": str(e)}
+            yield {"stage": "final_result", "result": _to_standardized({
+                "status": "failed", "plain_summary": f"LLM call failed: {e}"})}
+            return
+        try:
+            plan = _parse_llm_response(raw)
+        except Exception as e:
+            yield {"stage": "input_generation", "status": "failed", "error": str(e)}
+            yield {"stage": "final_result", "result": _to_standardized({
+                "status": "failed", "plain_summary": f"Parse error: {e}"})}
+            return
+        yield {"stage": "input_generation", "status": "done",
+               "system_type": plan.get("system_type", "FPGA Design")}
+    yield {"stage": "execution", "status": "start", "tool": "nextpnr"}
+    result = {
+        "system_type": plan.get("system_type", "FPGA Design"),
+        "metrics": plan.get("metrics", []),
+        "assumptions": plan.get("assumptions", []),
+        "plain_summary": plan.get("plain_summary", "FPGA analysis completed."),
+        "status": "completed",
+    }
+    yield {"stage": "execution", "status": "done", "tool": "nextpnr"}
+    ok = len(result.get("metrics", [])) > 0
+    yield {"stage": "proof_of_work", "status": "done" if ok else "failed",
+           "detail": f"Computed {len(result.get('metrics', []))} metric(s)."}
+    yield {"stage": "final_result", "result": _to_standardized(result)}

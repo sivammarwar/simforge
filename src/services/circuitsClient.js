@@ -78,6 +78,77 @@ export async function solveCircuitQuestion(question, provider = 'groq') {
 }
 
 /**
+ * Stream a circuits question via the Phase 2 SSE endpoint.
+ * Calls onEvent(stageData) for every real backend event as it arrives,
+ * and resolves with the final standardized result (same shape as
+ * solveCircuitQuestion's return value).
+ *
+ * @param {string} question
+ * @param {string} provider
+ * @param {(event: object) => void} onEvent — called for each SSE event
+ * @returns {Promise<object>} — the final standardized result
+ */
+export async function solveCircuitQuestionStream(question, provider = 'groq', onEvent = () => {}) {
+  console.log('[FLOW TRACE] circuitsClient.js — POST /api/circuits/solve/stream', { question: question.slice(0, 80), provider });
+
+  const response = await fetch('/api/circuits/solve/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ question, provider }),
+  });
+
+  if (!response.ok || !response.body) {
+    const text = await response.text().catch(() => '');
+    throw new Error(`Circuit stream failed (HTTP ${response.status}): ${text.slice(0, 200)}`);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+  let finalResult = null;
+  let answerText = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // SSE events are separated by double newlines
+    const lines = buffer.split('\n\n');
+    buffer = lines.pop() || '';
+
+    for (const block of lines) {
+      const line = block.trim();
+      if (!line.startsWith('data: ')) continue;
+      const jsonStr = line.slice(6);
+      let event;
+      try {
+        event = JSON.parse(jsonStr);
+      } catch {
+        continue;
+      }
+
+      if (event.stage === 'final_result') {
+        finalResult = event.result;
+      } else if (event.stage === 'answer_chunk') {
+        answerText += event.text;
+      } else if (event.stage === 'answer_done') {
+        answerText = event.full_text || answerText;
+      }
+
+      onEvent(event);
+    }
+  }
+
+  if (finalResult && finalResult.success !== false) {
+    finalResult._structured_answer = answerText;
+  }
+
+  return finalResult;
+}
+
+/**
  * Detect (cheaply, client-side, no AI call) whether a question is plausibly
  * about circuits, purely so App.jsx can route to this pipeline instead of
  * the other domains' pipeline. This is intentionally coarse — it only
@@ -89,7 +160,7 @@ export async function solveCircuitQuestion(question, provider = 'groq') {
  */
 export function looksLikeCircuitsQuestion(question) {
   const lower = question.toLowerCase();
-  return /\b(resistor|capacitor|inductor|diode|transistor|op-?amp|voltage|current|circuit|netlist|spice|ngspice|filter|divider|converter|amplifier|impedance|ohm|farad|henry)\b/.test(
+  return /\b(resistor|capacitor|inductor|diode|transistor|op-?amp|voltage|current|circuit|netlist|spice|ngspice|filter|divider|converter|amplifier|impedance|ohm|farad|henry|transfer function|symbolic|laplace|s-domain|pole|zero|root locus|bode|frequency response|rc|rl|rlc|truth table|boolean|logic gate|nand|nor|xor|k-map|flip.?flop|mux|decoder|adder|counter|binary|vcd|waveform|jk|dff|register|clock|sequential|fft|convolution|numerical integration|optimization|fir|iir|pid|step response|stability|gain margin|phase margin|feedback|closed loop|s-parameter|smith chart|transmission line|antenna|microwave|waveguide|vswr|microstrip|pcb|layout|trace|via|drc|fr4|stackup|gerber|fpga|verilog|vhdl|hdl|lut|synthesis|mosfet|bjt|pn junction|threshold voltage|doping|drain current|parasitic|rc extraction|coupling capacitance|floorplan|lvs|cmos|nmos|pmos|tcad|i-?v|oscillator|wien bridge|colpitts|hartley|crystal|clipper|doubler|rectifier|regulator|zener|common-emitter|bias|sinusoidal)\b/.test(
     lower
   );
 }

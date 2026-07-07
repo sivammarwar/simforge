@@ -117,6 +117,32 @@ async function submitToBackend(domain, inputFile, onProgress) {
     console.log('[Backend] Submitting simulation to backend');
 
     const effectiveDomain = 'Circuits';
+
+    // For circuits, use the direct rerun endpoint which bypasses Celery
+    // and runs ngspice directly on the (possibly edited) netlist.
+    if (effectiveDomain === 'Circuits' && inputFile?.content) {
+      if (onProgress) onProgress('Submitting to circuits pipeline', 10, 0);
+      const rerunResponse = await fetch('/api/circuits/rerun', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          netlist: inputFile.content,
+          system_type: inputFile.system_type || 'Circuit',
+          sub_domain: 'analog_sim',
+        })
+      });
+      if (!rerunResponse.ok) {
+        const errorText = await rerunResponse.text();
+        throw new Error(`Circuits rerun returned ${rerunResponse.status}: ${errorText}`);
+      }
+      const rerunData = await rerunResponse.json();
+      if (onProgress) onProgress('Simulation complete', 100, 1);
+      if (!rerunData.success) {
+        throw new Error(rerunData.error || 'Circuits rerun failed');
+      }
+      return rerunData.result;
+    }
+
     const solverName = 'ngspice';
 
     const response = await fetch('/api/simulate', {
