@@ -1,5 +1,5 @@
 """
-SimForge Solver API - Main Entry Point
+Seemulator Solver API - Main Entry Point
 Production-grade backend for engineering simulation platform
 """
 
@@ -62,7 +62,7 @@ async def lifespan(app: FastAPI):
     
     # ─── STARTUP ───────────────────────────────────────────────────────
     
-    logger.info("SimForge API starting up...")
+    logger.info("Seemulator API starting up...")
     
     try:
         # Initialize database tables
@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"MinIO connection check failed: {e}")
         
-        logger.info("SimForge API startup complete")
+        logger.info("Seemulator API startup complete")
         
     except Exception as e:
         logger.error(f"Startup failed: {e}")
@@ -106,13 +106,13 @@ async def lifespan(app: FastAPI):
     
     # ─── SHUTDOWN ─────────────────────────────────────────────────────
     
-    logger.info("SimForge API shutting down...")
+    logger.info("Seemulator API shutting down...")
     logger.info("Shutdown complete")
 
 # ─── FASTAPI APPLICATION ───────────────────────────────────────────────
 
 app = FastAPI(
-    title="SimForge Solver API",
+    title="Seemulator Solver API",
     version="2.0.0",
     description="Production-grade engineering simulation backend with real FEA/CFD solvers",
     lifespan=lifespan
@@ -157,7 +157,7 @@ app.include_router(ws_router, prefix="/ws", tags=["websocket"])
 async def root():
     """Root endpoint - API information"""
     return {
-        "name": "SimForge Solver API",
+        "name": "Seemulator Solver API",
         "version": "2.0.0",
         "status": "running",
         "solvers": [

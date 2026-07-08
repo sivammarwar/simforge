@@ -1,3 +1,3 @@
 """
-SimForge Backend Package
+Seemulator Backend Package
 """

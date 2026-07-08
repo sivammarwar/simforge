@@ -1,5 +1,5 @@
 """
-SQLAlchemy ORM Models for SimForge
+SQLAlchemy ORM Models for Seemulator
 Task, SimulationResult, MaterialCache
 """
 

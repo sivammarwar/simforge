@@ -1,6 +1,6 @@
 """
 Database Configuration and Session Management
-SQLAlchemy + PostgreSQL integration for SimForge
+SQLAlchemy + PostgreSQL integration for Seemulator
 """
 
 from sqlalchemy import create_engine, event, text
