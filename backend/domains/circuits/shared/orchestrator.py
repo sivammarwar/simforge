@@ -342,6 +342,7 @@ def solve_circuits_question_stream(
     selections = call1_result["selections"]
     inputs = call1_result.get("inputs", {})
     thinking = call1_result.get("thinking", [])
+    runner_up = call1_result.get("runner_up")
 
     if not selections:
         yield {"stage": "call1", "status": "no_selection"}
@@ -356,6 +357,7 @@ def solve_circuits_question_stream(
     yield {
         "stage": "call1", "status": "done",
         "selections": selections,
+        "runner_up": runner_up,  # second-choice domain — makes near-miss routing visible in logs
         "thinking": thinking,
         "detail": f"Selected {len(selections)} sub-domain(s) with inputs in 1 AI call",
     }
@@ -373,6 +375,7 @@ def solve_circuits_question_stream(
             "sub_domain": sd,
             "tool": tool,
             "reason": sel.get("reason", ""),
+            "runner_up": runner_up,  # second-choice domain from Call 1 (tie-break audit trail)
             "thinking": thinking,
             "selection_index": i,
             "total_selections": len(selections),

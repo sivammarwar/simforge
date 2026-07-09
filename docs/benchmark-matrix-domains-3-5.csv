@@ -1,0 +1,31 @@
+domain,q_num,question_short,expected_metrics,expected_payload_arrays,expected_plot_render,schematic_expected,expected_view,known_gaps_or_notes
+control_systems,1,"Bode of G=100/(s^2+2s+100), margins","gain margin (dB), phase margin (deg), crossover freqs","frequency_response (freq, mag_db, phase_deg)","Bode magnitude + phase",no,ControlSystemsView,"GM is infinite for this G (no phase crossover) - answer should say so, not invent a number"
+control_systems,2,"Step response of 25/(s^2+4s+25)","rise time, settling time, overshoot %","step_response (t,y)","step response curve",no,ControlSystemsView,"wn=5, zeta=0.4 -> overshoot ~25.4%; sanity-check proof_of_work against formula"
+control_systems,3,"Routh-Hurwitz stability of 1/(s^3+3s^2+2s+5) + pole-zero map","stable/unstable verdict, pole values","poles, zeros","pole-zero scatter",no,ControlSystemsView,"system IS stable (3*2>5); watch for LLM claiming instability"
+control_systems,4,"PID design for 1/((s+1)(s+2)), Ts<2s OS<10%","Kp, Ki, Kd, achieved Ts, achieved OS","step_response (compensated)","compensated step response",no,ControlSystemsView,"design task: verify achieved specs come from a real closed-loop sim, not asserted"
+control_systems,5,"Root locus of K/[s(s+2)(s+4)], critical K","critical K (should be 48)","root locus branch data OR poles at critical K","root locus plot",no,ControlSystemsView,"GAP: no root-locus plot type yet - expect honest 'plot not available' + correct K=48 metric"
+control_systems,6,"Closed-loop TF of G=10/(s+5), H=1/(s+1)","closed-loop poles","transfer_function_latex, poles","pole-zero scatter (optional)",no,ControlSystemsView,"T(s)=10(s+1)/(s^2+6s+15); check latex renders"
+control_systems,7,"Nyquist of 1/[s(s+1)(s+2)], encirclements","N encirclements of -1, stability verdict","nyquist data (re, im) if supported","Nyquist plot",no,ControlSystemsView,"GAP: no Nyquist plot type yet - expect honest fallback; N=0, stable"
+control_systems,8,"Margins of 50/[s(s+5)(s+10)], gain for PM=45deg","GM, PM, required gain","frequency_response","Bode",no,ControlSystemsView,
+control_systems,9,"Step of type-1 G=5/[s(s+2)], steady-state error","ess for unit step (=0), final value","step_response","step response",no,ControlSystemsView,"type-1 -> ess=0 for step; classic LLM trap is quoting ess for ramp instead"
+control_systems,10,"Lead compensator for 1/[s(s+1)], PM=45deg","compensator TF params, achieved PM","frequency_response (compensated)","compensated Bode",no,ControlSystemsView,"verify PM measured from compensated margin(), not asserted"
+digital_logic,1,"K-map simplify Y=A'B+AB'+AB","minimal SOP (=A+B), literal count","expressions, truth_table (verify)",none,no,DigitalLogicView (boolean),"GAP: needs truth_table/expressions renderer - currently metrics/plot oriented"
+digital_logic,2,"3-input XOR truth table, count of 1s","count of logic-1 outputs (=4)","truth_table (8 rows)",none,no,DigitalLogicView,
+digital_logic,3,"Simplify (A+B)(A'+C)(B+C') + verify","minimal expression","expressions, truth_table",none,no,DigitalLogicView,"verification means truth tables of original vs simplified must match row-for-row"
+digital_logic,4,"2-to-4 decoder expressions","4 output expressions Y0..Y3","expressions",none,no,DigitalLogicView,
+digital_logic,5,"Simplify ABC+AB'C+A'BC+A'B'C","minimal form (=C), gate count","expressions, truth_table",none,no,DigitalLogicView,"factors to C exactly - great canary for over-complicated LLM answers"
+digital_logic,6,"Full adder truth table + expressions","Sum and Cout expressions","truth_table (8 rows, 2 outputs), expressions",none,no,DigitalLogicView,
+digital_logic,7,"K-map simplify A'B'C'+A'B'C+AB'C'+ABC'","simplified SOP","expressions, truth_table",none,no,DigitalLogicView,"= A'B' + AC'"
+digital_logic,8,"4:1 MUX output expression","Y in terms of S1,S0,I0-I3","expressions",none,no,DigitalLogicView,
+digital_logic,9,"NAND-only conversion of AB+CD","NAND gate count (=3)","expressions (NAND form)",none,no,DigitalLogicView,
+digital_logic,10,"JK flip-flop characteristic eq + excitation table","Q(n+1)=JQ'+K'Q","expressions, truth_table (excitation)",none,no,DigitalLogicView,
+numerical_processing,1,"FFT of 1kHz square wave @10kHz 10ms","fundamental freq, harmonic freqs + amplitudes","series (x=freq, y=magnitude)","magnitude spectrum",no,NumericalView,"expect odd harmonics only (1k,3k,5k); even harmonics present = windowing/duty bug"
+numerical_processing,2,"Trapezoidal integration of 5sin(2pi*60t) over one cycle","average value (~0)","series (optional waveform)","optional",no,NumericalView,"answer must be ~0, not 2*5/pi (that's the half-cycle average - common trap)"
+numerical_processing,3,"Convolve 1ms rect pulse with RC impulse response","peak value, time constant","time_series or series","output waveform",no,NumericalView,
+numerical_processing,4,"Solve G matrix equation for 3-node circuit","V1, V2, V3 node voltages","(metrics only)",none,no,NumericalView,"G=[[3,-1,-1],[-1,2,-1],[-1,-1,2]], I=[5,0,3] -> exact solution; verify numerically"
+numerical_processing,5,"Optimize R for fc=1kHz with C=1uF","optimal R (~159.155 ohm), convergence info","series (optional cost curve)","optional",no,NumericalView,"closed form is 1/(2pi*fc*C) - optimizer must converge to it"
+numerical_processing,6,"Chirp 100Hz-5kHz spectrogram","chirp rate, duration","spectrogram (t, f, magnitude 2D)","spectrogram heatmap",no,NumericalView,"GAP: 2D heatmap plot type needed (Plotly heatmap trace)"
+numerical_processing,7,"Cubic spline diode I-V, estimate I at 0.65V","I(0.65V) interpolated","series (spline curve + data points)","I-V curve with points",no,NumericalView,
+numerical_processing,8,"Cross-correlation of two 1kHz sines, 0.5ms delay","recovered delay (=0.5ms)","series (correlation vs lag)","correlation plot",no,NumericalView,
+numerical_processing,9,"Solve RLC ODE L=1mH R=10 C=1uF, i(0)=1A","damping type (underdamped), decay rate, ringing freq","time_series (t, i)","current vs time",no,NumericalView,"R=10 < 2*sqrt(L/C)=63.2 -> underdamped; overdamped answer = wrong ODE setup"
+numerical_processing,10,"4th-order Butterworth LPF at 1kHz","order, cutoff, filter coefficients","frequency_response (mag + phase)","magnitude + phase response",no,NumericalView,"-3.01dB must land at exactly 1kHz; check normalization (fs vs analog)"

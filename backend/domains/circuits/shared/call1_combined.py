@@ -132,6 +132,13 @@ Routing rules:
 - If the question is about control systems/transfer functions with coefficients → control_systems.
 - If the question is about RF/EM/PCB/FPGA/semiconductor/physical design → respective LLM-only sub-domain.
 - A single question may need multiple sub-domains.
+- TIE-BREAK RULE: classify by the ARTIFACT the answer needs, NOT topic keywords.
+  If the question requires truth tables, boolean expressions, or FSM/state tables →
+  route to digital_logic, even if the underlying computation involves arithmetic
+  (e.g. timing-closure / f_max / slack calculations are digital_logic, not
+  numerical_processing, because the deliverable is a digital-design artifact).
+- Always report your second-choice sub-domain in "runner_up" so near-miss routing
+  is visible in logs. If no other sub-domain was plausible, use null.
 
 Respond with ONLY a JSON object (no markdown fences, no commentary) with this structure:
 {{
@@ -140,7 +147,8 @@ Respond with ONLY a JSON object (no markdown fences, no commentary) with this st
   ],
   "inputs": {{
     "<sub_domain_name>": {{<...input fields for that sub-domain...>}}
-  }}
+  }},
+  "runner_up": {{"sub_domain": "<second-choice name or null>", "reason": "<why it lost the tie-break>"}}
 }}
 
 If the question is not an engineering/circuits question at all, return:
@@ -202,9 +210,18 @@ def generate_selection_and_inputs(
     selections = payload.get("selections", [])
     inputs = payload.get("inputs", {})
     out_of_scope = payload.get("out_of_scope", False)
+    runner_up = payload.get("runner_up") or None
+    # normalize: {"sub_domain": null} counts as no runner-up
+    if isinstance(runner_up, dict) and not runner_up.get("sub_domain"):
+        runner_up = None
 
     thinking.append(f"Call 1 selected {len(selections)} sub-domain(s): "
                     + ", ".join(s.get("sub_domain", "?") for s in selections))
+    if runner_up:
+        thinking.append(
+            f"Call 1 runner-up: {runner_up.get('sub_domain')} "
+            f"({runner_up.get('reason', 'no reason given')})"
+        )
 
     for sel in selections:
         sd = sel.get("sub_domain", "?")
@@ -216,6 +233,7 @@ def generate_selection_and_inputs(
         "selections": selections,
         "inputs": inputs,
         "out_of_scope": out_of_scope,
+        "runner_up": runner_up,
         "thinking": thinking,
     }
 
