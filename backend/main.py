@@ -6,6 +6,7 @@ Production-grade backend for engineering simulation platform
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from logging.config import dictConfig
 import logging
@@ -19,8 +20,8 @@ load_dotenv()
 from db import init_db, check_db_connection
 
 # API routes
-from api import routes_simulate, routes_task, routes_chat
-from circuits.api_routes import router as circuits_router
+from api import routes_simulate, routes_task, routes_chat, routes_auth
+from domains.circuits.api_routes import router as circuits_router
 from websocket.progress_ws import router as ws_router
 
 # ─── LOGGING CONFIGURATION ─────────────────────────────────────────────
@@ -120,10 +121,18 @@ app = FastAPI(
 
 # ─── MIDDLEWARE ─────────────────────────────────────────────────────────
 
-# CORS for frontend integration
+# CORS for frontend integration.
+# NOTE: allow_origins=["*"] + allow_credentials=True is rejected by browsers
+# (the httpOnly session cookie used by the Phase 1 access gate would never
+# be sent/set). Must use an explicit origin allowlist for credentialed CORS.
+_CORS_ORIGINS = os.environ.get(
+    "SIMFORGE_CORS_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173",
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_CORS_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -145,6 +154,7 @@ async def log_requests(request, call_next):
 
 # ─── ROUTERS ───────────────────────────────────────────────────────────
 
+app.include_router(routes_auth.router, tags=["auth"])
 app.include_router(routes_simulate.router, prefix="/api", tags=["simulate"])
 app.include_router(routes_task.router, prefix="/api", tags=["tasks"])
 app.include_router(routes_chat.router, tags=["chat"])
@@ -228,10 +238,13 @@ async def health():
 async def global_exception_handler(request, exc):
     """Catch all unhandled exceptions"""
     logger.error(f"Unhandled exception: {exc}")
-    return {
-        "error": "Internal server error",
-        "detail": str(exc)
-    }
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "detail": str(exc)
+        },
+    )
 
 # ─── MAIN ENTRY POINT ───────────────────────────────────────────────────
 

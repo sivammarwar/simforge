@@ -82,6 +82,7 @@ else:
     print("[Schematic Startup] All schematic rendering dependencies verified successfully.")
 
 from .netlist_translate import parse_netlist_lines, _split_hint, _tokenize  # reuse, no duplication
+from .netlist_ai import _strip_spice_functions_for_lcapy
 
 _GROUND_NAMES = {"0", "gnd", "GND"}
 
@@ -147,7 +148,8 @@ def render_schematic_svg(unified_netlist: str, runs_dir: Path, task_id: str) -> 
     except ImportError as exc:
         raise SchematicError(f"lcapy is not installed: {exc}")
 
-    layout_netlist = _normalize_ground_for_layout(unified_netlist)
+    layout_netlist = _strip_spice_functions_for_lcapy(unified_netlist)
+    layout_netlist = _normalize_ground_for_layout(layout_netlist)
     print(f"[Schematic] Layout netlist: {layout_netlist}")
 
     try:

@@ -160,6 +160,7 @@ User question: {question}"""
 def generate_selection_and_inputs(
     question: str,
     call_llm: Callable[[str], str],
+    context: str = "",
 ) -> Dict[str, Any]:
     """
     Call 1: ONE AI call that selects sub-domain(s) AND generates solver inputs.
@@ -177,8 +178,10 @@ def generate_selection_and_inputs(
         for c in list_capabilities()
     )
     prompt = _COMBINED_PROMPT.format(question=question, capabilities=caps_text)
-    # capabilities is embedded in the prompt template above, but we also pass
-    # it separately in case the template needs it — currently it's inline.
+    # If context is provided, append it so the AI can modify an existing circuit
+    # rather than generating a brand-new netlist on follow-up turns.
+    if context and context.strip():
+        prompt += f"\n\n---\nCurrent session context (use this to update/modify the existing circuit, not replace it unless asked):\n{context.strip()}\n---\n"
 
     thinking: List[str] = []
     thinking.append("Call 1: Combined sub-domain selection + input generation (single AI call).")

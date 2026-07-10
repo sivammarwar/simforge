@@ -9,6 +9,7 @@ pydantic
 aiofiles
 websockets
 requests
+itsdangerous
 lcapy==1.26
 # NOTE: Install lcapy with --no-deps to avoid broken "importlib" dependency:
 # pip install lcapy==1.26 --no-deps

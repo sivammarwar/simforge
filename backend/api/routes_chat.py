@@ -58,7 +58,7 @@ PROVIDER_CONFIG = {
     "cerebras": {
         "base_url": "https://api.cerebras.ai/v1",
         "env": "CEREBRAS_API_KEY",
-        "model": "llama-3.3-70b",
+        "model": "gpt-oss-120b",
     },
 }
 

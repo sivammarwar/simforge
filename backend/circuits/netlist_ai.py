@@ -51,8 +51,9 @@ if circuitikz_path not in texinputs:
 
 SYSTEM_PROMPT = """You are the request router and circuit-netlist generator for an automated
 electronics simulation pipeline. This pipeline can ONLY do the following, nothing else:
-  - Build a SPICE-style netlist of resistors, capacitors, inductors, diodes, BJTs, and
-    independent V/I sources, and simulate it with ngspice using ONE of these analyses:
+  - Build a SPICE-style netlist of resistors, capacitors, inductors, diodes, BJTs,
+    VCVS (ideal op-amps), and independent V/I sources (DC, AC, SINE, PULSE), and
+    simulate it with ngspice using ONE of these analyses:
       * operating_point  (DC bias / steady state)
       * transient        (time-domain waveform)
       * ac               (frequency sweep / Bode-style magnitude+phase)
@@ -62,9 +63,9 @@ electronics simulation pipeline. This pipeline can ONLY do the following, nothin
 It CANNOT do things like: PCB layout/routing, EMI/EMC/compliance prediction, thermal
 co-simulation, mechanical/vibration analysis, RF S-parameter/EM field solving, DC sweep
 curve tracing, noise/distortion analysis, Monte Carlo/yield/tolerance analysis, control
-loop compensator design beyond a plain AC sweep, MOSFET/op-amp-heavy analog design
+loop compensator design beyond a plain AC sweep, MOSFET-heavy analog design
 requiring vendor SPICE models we don't have, digital logic/timing simulation, or
-anything outside basic passive/BJT/diode circuit analysis.
+anything outside basic passive/BJT/diode/op-amp circuit analysis.
 
 For EVERY question, first decide:
   1. "in_scope" — is this fundamentally an electronics/circuits question at all
@@ -107,7 +108,8 @@ NETLIST FORMAT (one component per line):
 Rules:
 - Ground node MUST be the literal name "0".
 - Component name prefixes (first letter, SPICE convention): V=voltage source,
-  I=current source, R=resistor, L=inductor, C=capacitor, D=diode, Q=BJT.
+  I=current source, R=resistor, L=inductor, C=capacitor, D=diode, Q=BJT,
+  E=VCVS (voltage-controlled voltage source, for ideal op-amps).
 - Layout hint is one of: right, down, left, up — optionally with "=<size>",
   e.g. "right=2". Every electrical component line needs a hint EXCEPT wires.
 - Use "W <NodeA> <NodeB>; <hint>" for an ideal wire that ties two node names
@@ -117,16 +119,19 @@ Rules:
   never symbolic placeholders.
 - Every node referenced must connect to at least 2 components (no dangling
   nodes), and there must be a DC path to ground for every node.
-- IMPORTANT: Voltage and current sources MUST use simple DC values only.
-  Do NOT use SPICE functions like pulse(), sin(), exp(), or any other
-  time-varying expressions. Lcapy's netlist parser (used for schematic
-  validation and rendering) does not support these. Use a simple DC value
-  like "V1 1 0 5; down" for a 5V source. The transient analysis will handle
-  the time-domain simulation separately.
+- Voltage and current sources support DC, AC, and SPICE time-varying functions.
+  DC:   "V1 1 0 dc 12; down"
+  AC:   "V1 1 0 ac 1; down"  (for AC sweep)
+  SINE: "V1 1 0 SINE(0 5 1k); down"  (for transient with sinusoidal input)
+  PULSE:"V1 1 0 PULSE(0 5 0 1n 1n 500u 1m); down"  (for transient with pulse)
+  Note: SINE/PULSE/AC functions are stripped before Lcapy schematic rendering.
 - BJT syntax: Use "Qname collector base emitter; <hint>" (3 nodes only).
   Do NOT include a model name like "NPN" or "PNP" after the nodes — Lcapy
   does not support this. Example: "Q1 3 2 4; down" where node 3 is collector,
   node 2 is base, node 4 is emitter.
+- Op-amp: Use VCVS (E-prefix) as ideal op-amp: "E1 out 0 inv noninv 100000; right"
+  For inverting amp: Rin from input to inv node, Rf from output to inv, non-inv to ground.
+- Zener diode: Use "D1 2 0 Dzener; down" — pipeline auto-injects .model Dzener D(Bv=5.1 Ibv=20m)
 
 ANALYSIS (pick exactly one, for whatever part of the question is feasible):
 - "operating_point": DC-only circuits (resistive dividers, DC bias points). args = {}
@@ -236,6 +241,24 @@ def _validate_required_fields(payload: Dict[str, Any]) -> None:
         )
 
 
+def _strip_spice_functions_for_lcapy(netlist_text: str) -> str:
+    """Replace SPICE source functions (SINE, PULSE, EXP, PWL, SFFM, AC) on
+    V/I source lines with a simple DC value so Lcapy can parse the netlist."""
+    lines = netlist_text.replace("\\n", "\n").splitlines()
+    cleaned = []
+    for line in lines:
+        electrical, sep, hint = line.partition(";")
+        tokens = electrical.strip().split()
+        if tokens and tokens[0][0].upper() in ("V", "I"):
+            val_str = " ".join(tokens[3:]) if len(tokens) > 3 else ""
+            if re.search(r'\b(SINE|PULSE|EXP|PWL|SFFM|ac)\b', val_str, re.IGNORECASE):
+                tokens = tokens[:3] + ["dc", "1"]
+                electrical = " ".join(tokens)
+                line = electrical + (sep + hint if sep else "")
+        cleaned.append(line)
+    return "\n".join(cleaned)
+
+
 def _validate_netlist_with_lcapy(netlist_text: str) -> None:
     """
     Two-stage validation, both fed back into the repair loop on failure:
@@ -261,8 +284,9 @@ def _validate_netlist_with_lcapy(netlist_text: str) -> None:
     except ImportError as exc:
         raise NetlistGenerationError(f"lcapy is not installed, cannot validate netlist: {exc}")
 
+    cleaned = _strip_spice_functions_for_lcapy(netlist_text)
     cleaned = "\n".join(
-        line for line in netlist_text.replace("\\n", "\n").splitlines() if line.strip()
+        line for line in cleaned.splitlines() if line.strip()
     )
     try:
         Circuit(cleaned)
@@ -301,6 +325,70 @@ def _validate_netlist_with_lcapy(netlist_text: str) -> None:
     #     )
 
 
+def generate_netlist_with_repair_stream(
+    question: str,
+    call_llm: Callable[[str], str],
+    max_attempts: int = 3,
+):
+    """
+    Generator version of generate_netlist_with_repair. Yields real progress
+    events as they happen (Phase 2 AI transparency — no fabricated steps,
+    every event corresponds to an actual attempt/retry against the LLM):
+
+      {"event": "attempt_start", "attempt": N, "max_attempts": M}
+      {"event": "repair_needed", "attempt": N, "error": "<validation error>"}
+      {"event": "result", "payload": {...}}   -- final item on success
+      {"event": "error", "error": "<message>"} -- final item on exhaustion
+
+    `generate_netlist_with_repair` (below) wraps this generator for the
+    existing synchronous callers, so no existing behavior changes.
+    """
+    prompt = f"Circuit question:\n{question}"
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        yield {"event": "attempt_start", "attempt": attempt, "max_attempts": max_attempts}
+        raw_response = call_llm(prompt)
+
+        try:
+            payload = _extract_json(raw_response)
+            _validate_required_fields(payload)
+            payload["netlist"] = payload["netlist"].replace("\\n", "\n")
+            payload.setdefault("parameters", {})
+            payload.setdefault("assumptions", [])
+            payload.setdefault("probe_nodes", [])
+
+            # Terminal states — nothing to validate against Lcapy, because
+            # either the question isn't circuits at all, or it is circuits
+            # but nothing about it is simulate-able with this pipeline.
+            if not payload["in_scope"] or not payload["netlist"].strip():
+                payload["_repair_attempts"] = attempt
+                yield {"event": "result", "payload": payload}
+                return
+
+            _validate_netlist_with_lcapy(payload["netlist"])
+            payload["_repair_attempts"] = attempt
+            yield {"event": "result", "payload": payload}
+            return
+
+        except NetlistGenerationError as exc:
+            last_error = exc
+            yield {"event": "repair_needed", "attempt": attempt, "error": str(exc)}
+            prompt = (
+                f"Circuit question:\n{question}\n\n"
+                f"Your previous response failed validation with this error:\n{exc}\n\n"
+                f"Your previous response was:\n{raw_response}\n\n"
+                f"Fix ONLY what's needed to resolve the error above. "
+                f"Respond again with ONLY the corrected JSON object."
+            )
+
+    yield {
+        "event": "error",
+        "error": f"Failed to generate a valid circuit response after {max_attempts} attempts. "
+                 f"Last error: {last_error}",
+    }
+
+
 def generate_netlist_with_repair(
     question: str,
     call_llm: Callable[[str], str],
@@ -320,46 +408,16 @@ def generate_netlist_with_repair(
     The first two are terminal states returned immediately without netlist
     validation (there's nothing to validate). Only the third goes through
     Lcapy validation + the repair loop.
+
+    Thin wrapper around generate_netlist_with_repair_stream for existing
+    synchronous callers — see that function for the streaming version used
+    by the Phase 2 SSE transparency pipeline.
     """
-    prompt = f"Circuit question:\n{question}"
-    last_error = None
-
-    for attempt in range(1, max_attempts + 1):
-        raw_response = call_llm(prompt)
-
-        try:
-            payload = _extract_json(raw_response)
-            _validate_required_fields(payload)
-            payload["netlist"] = payload["netlist"].replace("\\n", "\n")
-            payload.setdefault("parameters", {})
-            payload.setdefault("assumptions", [])
-            payload.setdefault("probe_nodes", [])
-
-            # Terminal states — nothing to validate against Lcapy, because
-            # either the question isn't circuits at all, or it is circuits
-            # but nothing about it is simulate-able with this pipeline.
-            if not payload["in_scope"] or not payload["netlist"].strip():
-                payload["_repair_attempts"] = attempt
-                return payload
-
-            _validate_netlist_with_lcapy(payload["netlist"])
-            payload["_repair_attempts"] = attempt
-            return payload
-
-        except NetlistGenerationError as exc:
-            last_error = exc
-            prompt = (
-                f"Circuit question:\n{question}\n\n"
-                f"Your previous response failed validation with this error:\n{exc}\n\n"
-                f"Your previous response was:\n{raw_response}\n\n"
-                f"Fix ONLY what's needed to resolve the error above. "
-                f"Respond again with ONLY the corrected JSON object."
-            )
-
-    raise NetlistGenerationError(
-        f"Failed to generate a valid circuit response after {max_attempts} attempts. "
-        f"Last error: {last_error}"
-    )
+    for event in generate_netlist_with_repair_stream(question, call_llm, max_attempts):
+        if event["event"] == "result":
+            return event["payload"]
+        if event["event"] == "error":
+            raise NetlistGenerationError(event["error"])
 
 
 # ---------------------------------------------------------------------------
@@ -369,6 +427,16 @@ def generate_netlist_with_repair(
 # above instead of using this. This exists so the module runs/tests on its
 # own without assuming anything about your existing backend structure.
 # ---------------------------------------------------------------------------
+_GENERIC_SYSTEM_PROMPT = (
+    "You are an expert circuit/electronics analysis assistant used inside a "
+    "multi-tool automated pipeline (symbolic analysis, digital logic, "
+    "numerical processing, control systems, RF/EM, PCB, FPGA, semiconductor "
+    "device, or physical design). Follow the JSON schema and instructions in "
+    "the user's message exactly. Respond with ONLY the requested JSON object "
+    "(no markdown code fences, no commentary, no explanation outside the JSON)."
+)
+
+
 def default_call_llm(prompt: str, provider: str = "groq") -> str:
     from openai import OpenAI  # pip install openai
 
@@ -383,18 +451,32 @@ def default_call_llm(prompt: str, provider: str = "groq") -> str:
             "env": "OPENAI_API_KEY",
             "model": "gpt-4o-mini",
         },
+        "cerebras": {
+            "base_url": "https://api.cerebras.ai/v1",
+            "env": "CEREBRAS_API_KEY",
+            "model": "gpt-oss-120b",
+        },
     }
     cfg = provider_config.get(provider, provider_config["groq"])
     api_key = os.environ.get(cfg["env"])
     if not api_key:
         raise RuntimeError(f"Missing {cfg['env']} environment variable for provider '{provider}'.")
 
+    # `generate_netlist_with_repair(_stream)` in this module always builds its
+    # prompt as "Circuit question:\n<question>..." — that's the only caller
+    # that needs the analog-netlist-specific SYSTEM_PROMPT above. Every other
+    # sub-domain pipeline (symbolic_analysis, digital_logic, rf_em, etc.)
+    # shares this same call_llm callable but has its own JSON schema in the
+    # prompt body, so it must NOT receive the netlist-only system prompt
+    # (which explicitly tells the model it "cannot" do those other domains).
+    system_prompt = SYSTEM_PROMPT if prompt.startswith("Circuit question:") else _GENERIC_SYSTEM_PROMPT
+
     client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
     response = client.chat.completions.create(
         model=cfg["model"],
         temperature=0.1,
         messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": system_prompt},
             {"role": "user", "content": prompt},
         ],
     )

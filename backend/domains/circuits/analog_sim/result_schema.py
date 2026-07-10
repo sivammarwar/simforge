@@ -4,7 +4,7 @@ AnalogSimResult
 Strict result schema for a completed analog simulation run.
 Relocated from api_routes.py so the schema lives next to its sub-domain code.
 """
-from typing import Literal, Optional
+from typing import Literal, Optional, List, Dict, Any
 from pydantic import BaseModel
 
 
@@ -15,6 +15,7 @@ class AnalogSimResult(BaseModel):
     system_type: str = "Unknown Circuit"
     solver_name: str = "ngspice (AI netlist)"
     status: str = "completed"
+    success: bool = False
     netlist: str
     raw_output_path: str
     metrics: list
@@ -27,3 +28,6 @@ class AnalogSimResult(BaseModel):
     assumptions: list = []
     unsupported_aspects: list = []
     plain_summary: Optional[str] = None
+    verified: bool = False
+    model_parameters: List[Dict[str, Any]] = []
+    proof_of_work: Optional[Dict[str, Any]] = None

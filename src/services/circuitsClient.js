@@ -78,7 +78,64 @@ export async function solveCircuitQuestion(question, provider = 'groq') {
 }
 
 /**
- * Stream a circuits question via the Phase 2 SSE endpoint.
+ * Convert a Seemulator contract event into the legacy stage-based event shape
+ * that App.jsx already consumes. This lets us adopt the new contract on the
+ * backend without replacing the entire frontend.
+ */
+function _normalizeContractEvent(name, payload) {
+  switch (name) {
+    case 'stage': {
+      const key = payload?.key;
+      const label = payload?.label || key;
+      switch (key) {
+        case 'classify':
+          return { stage: 'call1', status: 'done', detail: label };
+        case 'tool_select':
+          return { stage: 'tool_select', status: 'done', tool: label };
+        case 'input_generation':
+          return { stage: 'input_generation', status: 'done', system_type: label };
+        case 'validation':
+          return { stage: 'validation', status: 'done', detail: label };
+        case 'execution':
+          return { stage: 'execution', status: 'done', tool: label };
+        case 'parsing':
+          return { stage: 'schematic', status: 'done' };
+        case 'proof_of_work':
+          return { stage: 'proof_of_work', status: 'done', detail: label };
+        case 'explanation':
+          return { stage: 'answer_generation', status: 'start', detail: label };
+        default:
+          return { stage: key, status: 'done', label };
+      }
+    }
+    case 'routed':
+      return {
+        stage: 'classification',
+        status: 'done',
+        sub_domain: payload?.sub_domain,
+        tool: payload?.tools?.[0],
+        verified: payload?.verified,
+      };
+    case 'model':
+      // New event: App.jsx must handle this explicitly.
+      return { stage: 'model', input_file: payload?.input_file, parameters: payload?.parameters };
+    case 'result':
+      return { stage: 'final_result', result: payload };
+    case 'token':
+      return { stage: 'answer_chunk', text: payload?.text };
+    case 'done':
+      // The contract uses `data: [DONE]` as the done marker.
+      return { stage: 'answer_done' };
+    case 'error':
+      return { stage: 'error', error: payload?.message || 'Unknown error' };
+    default:
+      return null;
+  }
+}
+
+
+/**
+ * Stream a circuits question via the Seemulator contract SSE endpoint.
  * Calls onEvent(stageData) for every real backend event as it arrives,
  * and resolves with the final standardized result (same shape as
  * solveCircuitQuestion's return value).
@@ -86,15 +143,41 @@ export async function solveCircuitQuestion(question, provider = 'groq') {
  * @param {string} question
  * @param {string} provider
  * @param {(event: object) => void} onEvent — called for each SSE event
+ * @param {object} options — Seemulator contract context fields
  * @returns {Promise<object>} — the final standardized result
  */
-export async function solveCircuitQuestionStream(question, provider = 'groq', onEvent = () => {}) {
-  console.log('[FLOW TRACE] circuitsClient.js — POST /api/circuits/solve/stream', { question: question.slice(0, 80), provider });
+export async function solveCircuitQuestionStream(question, provider = 'groq', onEvent = () => {}, options = {}) {
+  const {
+    history = [],
+    activeInputFile = null,
+    parameters = [],
+    rerun = false,
+    subDomain = null,
+    inputFile = null,
+  } = options;
+
+  console.log('[FLOW TRACE] circuitsClient.js — POST /api/circuits/solve/stream', {
+    question: question.slice(0, 80),
+    provider,
+    rerun,
+    subDomain,
+    parameterCount: parameters.length,
+    historyLength: history.length,
+  });
 
   const response = await fetch('/api/circuits/solve/stream', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ question, provider }),
+    body: JSON.stringify({
+      question,
+      provider,
+      history,
+      active_input_file: activeInputFile,
+      parameters,
+      rerun,
+      sub_domain: subDomain,
+      input_file: inputFile,
+    }),
   });
 
   if (!response.ok || !response.body) {
@@ -114,25 +197,39 @@ export async function solveCircuitQuestionStream(question, provider = 'groq', on
 
     buffer += decoder.decode(value, { stream: true });
 
-    // SSE events are separated by double newlines
-    const lines = buffer.split('\n\n');
-    buffer = lines.pop() || '';
+    // SSE blocks are separated by double newlines. Each block may contain
+    // multiple lines; we parse `event:` and `data:` per the Seemulator contract.
+    const blocks = buffer.split('\n\n');
+    buffer = blocks.pop() || '';
 
-    for (const block of lines) {
-      const line = block.trim();
-      if (!line.startsWith('data: ')) continue;
-      const jsonStr = line.slice(6);
-      let event;
-      try {
-        event = JSON.parse(jsonStr);
-      } catch {
-        continue;
+    for (const block of blocks) {
+      const lines = block.split('\n');
+      let eventName = 'message';
+      let dataStr = null;
+      for (const line of lines) {
+        if (line.startsWith('event: ')) eventName = line.slice(7).trim();
+        if (line.startsWith('data: ')) dataStr = line.slice(6).trim();
       }
+      if (!dataStr) continue;
+
+      let payload;
+      if (dataStr === '[DONE]') {
+        payload = '[DONE]';
+      } else {
+        try {
+          payload = JSON.parse(dataStr);
+        } catch {
+          continue;
+        }
+      }
+
+      const event = _normalizeContractEvent(eventName, payload);
+      if (!event) continue;
 
       if (event.stage === 'final_result') {
         finalResult = event.result;
       } else if (event.stage === 'answer_chunk') {
-        answerText += event.text;
+        answerText += event.text || '';
       } else if (event.stage === 'answer_done') {
         answerText = event.full_text || answerText;
       }

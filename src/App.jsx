@@ -874,11 +874,22 @@ export default function App() {
         // needs to accept and use the `history` field).
         console.log('[Circuits Pipeline] Calling solveCircuitQuestionStream');
         const stageLines = [];
+        let modelParameters = null;
+        let modelInputFile = null;
         const circuitResult = await solveCircuitQuestionStream(
           engineeringText, selectedProvider,
           (ev) => {
             const s = ev.stage, st = ev.status;
             const sd = ev.sub_domain || '';
+
+            // New Seemulator contract: model event arrives early with the
+            // structured parameters and the active input file.
+            if (s === 'model') {
+              modelParameters = ev.parameters || [];
+              modelInputFile = ev.input_file || null;
+              return;
+            }
+
             const icons = { call1:'🧠', classification:'🔍', input_generation:'📝', execution:'⚡', schematic:'📐', proof_of_work:'🔬', answer_generation:'✍️' };
             const ic = icons[s] || '⚙️';
             const sdLbl = {
@@ -926,6 +937,14 @@ export default function App() {
                 text: stageLines.join('\n'),
               }));
             }
+          },
+          {
+            history: conversationHistory,
+            activeInputFile: typeof currentInputFile === 'string' ? currentInputFile : currentInputFile?.content || null,
+            parameters: currentParams || [],
+            rerun: false,
+            subDomain: null,
+            inputFile: null,
           }
         );
         console.log('[Circuits Pipeline] Got result:', circuitResult);
@@ -934,46 +953,64 @@ export default function App() {
           throw new Error('Circuit pipeline returned no result. The backend may have encountered an error.');
         }
         
-        // Convert metrics + netlist into editable parameters for the ModelPane playground.
-        // Component values (R1, C1, V1, etc.) get editable=true with file_anchor pointing
-        // to the exact line/token in the netlist so sliders and inline edits work.
-        // Computed metrics (cutoff_frequency, Transfer Function, etc.) are read-only results.
-        const netlistLines = (circuitResult.netlist || '').split('\n');
-        const parameters = [];
-        const componentRegex = /^([A-Z]+\d+)\s+(\d+)\s+(\d+)\s+(.+)$/i;
-        
-        for (const m of (circuitResult.metrics || [])) {
-          // Try to find this metric's value in the netlist to build a file_anchor
-          let foundAnchor = null;
-          let isComponent = false;
-          
-          for (let i = 0; i < netlistLines.length; i++) {
-            const line = netlistLines[i].trim();
-            if (!line || line.startsWith('*') || line.startsWith('.')) continue;
-            const match = line.match(componentRegex);
-            if (match) {
-              const ref = match[1]; // e.g. R1, C1, V1
-              const valueStr = match[4].trim();
-              // Check if this metric name matches the component reference
-              if (m.name === ref || m.name === ref.replace(/(\d+)$/, ' ($1)')) {
-                foundAnchor = { line: i + 1, match: valueStr.split(/\s+/)[0] };
-                isComponent = true;
-                break;
+        // Prefer the structured Seemulator model event if it arrived. It already
+        // contains editable parameters with file_anchor, unit, min/max, and the
+        // active input file. Fall back to the legacy metrics→parameters conversion
+        // only when the backend still emits the old format.
+        let parameters = [];
+        const netlist = modelInputFile || circuitResult.netlist || '';
+
+        if (modelParameters && modelParameters.length > 0) {
+          parameters = modelParameters.map((p, idx) => ({
+            id: p.id || p.name || `param_${idx}`,
+            name: p.name || p.id || `Parameter ${idx + 1}`,
+            field: p.id || p.name || `param_${idx}`,
+            value: String(p.value),
+            unit: p.unit || '',
+            min: p.min,
+            max: p.max,
+            step: p.step,
+            file_anchor: p.file_anchor || null,
+            editable: p.editable !== false,
+            tag: p.editable !== false ? 'stated' : 'default',
+            section: p.section || (p.editable !== false ? 'COMPONENTS' : 'RESULTS'),
+          }));
+        } else {
+          // Legacy conversion: metrics + netlist → editable parameters.
+          const netlistLines = netlist.split('\n');
+          const componentRegex = /^([A-Z]+\d+)\s+(\d+)\s+(\d+)\s+(.+)$/i;
+
+          for (const m of (circuitResult.metrics || [])) {
+            let foundAnchor = null;
+            let isComponent = false;
+
+            for (let i = 0; i < netlistLines.length; i++) {
+              const line = netlistLines[i].trim();
+              if (!line || line.startsWith('*') || line.startsWith('.')) continue;
+              const match = line.match(componentRegex);
+              if (match) {
+                const ref = match[1];
+                const valueStr = match[4].trim();
+                if (m.name === ref || m.name === ref.replace(/(\d+)$/, ' ($1)')) {
+                  foundAnchor = { line: i + 1, match: valueStr.split(/\s+/)[0] };
+                  isComponent = true;
+                  break;
+                }
               }
             }
+
+            parameters.push({
+              field: m.name,
+              value: String(m.value),
+              unit: '',
+              tag: isComponent ? 'stated' : 'default',
+              editable: isComponent,
+              section: isComponent ? 'COMPONENTS' : 'RESULTS',
+              ...(foundAnchor ? { file_anchor: foundAnchor } : {})
+            });
           }
-          
-          parameters.push({
-            field: m.name,
-            value: String(m.value),
-            unit: '',
-            tag: isComponent ? 'stated' : 'default',
-            editable: isComponent,
-            section: isComponent ? 'COMPONENTS' : 'RESULTS',
-            ...(foundAnchor ? { file_anchor: foundAnchor } : {})
-          });
         }
-        
+
         console.log('[Circuits Pipeline] Converted parameters:', parameters);
         
         // Generate plots from the circuit result
@@ -996,14 +1033,14 @@ export default function App() {
             },
             inputFile: {
               filename: 'circuit.cir',
-              content: circuitResult.netlist,
+              content: netlist,
               metadata: { system_type: circuitResult.system_type, domain: 'Circuits' }
             },
             parameters: parameters,
             extractionInfo: { assumptions: circuitResult.assumptions || [] }
           },
           simulationResult: {
-            success: circuitResult.status === 'completed',
+            success: circuitResult.status === 'completed' || circuitResult.success === true,
             solverResult: circuitResult,
             parsedResult: circuitResult,
             domain: 'Circuits',
@@ -1182,7 +1219,7 @@ export default function App() {
       if (simulationResult && simulationResult.success) {
         setSessionResults(prev => ({
           ...prev,
-          [targetSessionId]: simulationResult.parsedResult
+          [targetSessionId]: simulationResult.solverResult || simulationResult.parsedResult
         }));
         
         // Mark results as available and simulation as run
@@ -1349,12 +1386,145 @@ export default function App() {
     console.log(`[handleUpdateField] New parameters:`, updatedParameters);
   };
 
-  // NEW: batch-apply every pending slider change from ModelPane's
-  // "Continue and Run Simulation" button in ONE pass, then run the
-  // simulation using the freshly-built input file directly (not by
-  // re-reading session state, which would still be stale in this tick).
-  //
-  // This replaces the old pattern of looping onUpdateField(...) once per
+  // Run a ModelPane edit for Circuits through the backend Seemulator rerun
+  // contract. Skips CALL 1, applies the edited parameters server-side, re-runs
+  // ngspice, and streams a fresh Call 2 answer that explains the new numbers.
+  const runCircuitsRerun = async (updatedInputFile, updatedParameters, runMsgId) => {
+    const stageLines = [];
+    let modelParameters = null;
+    let modelInputFile = null;
+
+    const firstUserText = getActiveMessages().find(m => m.sender === 'user')?.text
+      || 'Re-run with updated parameters';
+    const activeSubDomain = getActiveResults()?.sub_domain || 'analog_sim';
+
+    try {
+      const circuitResult = await solveCircuitQuestionStream(
+        firstUserText,
+        selectedProvider,
+        (ev) => {
+          if (ev.stage === 'model') {
+            modelParameters = ev.parameters || [];
+            modelInputFile = ev.input_file || null;
+            return;
+          }
+
+          const s = ev.stage, st = ev.status;
+          const sd = ev.sub_domain || '';
+          const icons = { call1:'🧠', classification:'🔍', input_generation:'📝', execution:'⚡', schematic:'📐', proof_of_work:'🔬', answer_generation:'✍️' };
+          const ic = icons[s] || '⚙️';
+          const sdLbl = {
+            analog_sim: 'Analog',
+            symbolic_analysis: 'Symbolic',
+            digital_logic: 'Digital',
+            numerical_processing: 'Numerical',
+            control_systems: 'Control',
+            rf_em: 'RF/EM',
+            pcb_realization: 'PCB',
+            fpga_realization: 'FPGA',
+            semiconductor_device: 'Semi',
+            physical_design: 'Phys Design',
+          }[sd] || 'Analysis';
+          let line = null;
+          if (s === 'classification' && st === 'done') line = `${ic} Classified → ${ev.sub_domain} / ${ev.tool}`;
+          else if (s === 'input_generation' && st === 'done') line = `${ic} ${sdLbl}: input ready (${ev.system_type || 'ok'})`;
+          else if (s === 'execution' && st === 'done') line = `${ic} ${sdLbl}: execution complete`;
+          else if (s === 'schematic' && st === 'done') line = `${ic} ${sdLbl}: schematic rendered`;
+          else if (s === 'proof_of_work' && st === 'done') line = `${ic} ${sdLbl}: verified: ${ev.detail}`;
+          else if (s === 'answer_generation' && st === 'start') line = '✍️ Re-explaining results with updated parameters...';
+          else if (s === 'answer_done') line = '📄 Structured answer ready';
+          else if (s === 'error') line = `⚠️ Error: ${ev.error}`;
+          if (line) {
+            stageLines.push(line);
+            updateSessionMessageContent(activeSessionId, runMsgId, () => ({
+              text: stageLines.join('\n'),
+            }));
+          }
+        },
+        {
+          history: buildConversationHistory(activeSessionId),
+          activeInputFile: updatedInputFile.content,
+          parameters: updatedParameters.map(p => ({
+            id: p.id || p.field,
+            name: p.name || p.field,
+            value: p.value,
+            unit: p.unit || '',
+            min: p.min,
+            max: p.max,
+            step: p.step,
+            file_anchor: p.file_anchor,
+            editable: p.editable !== false,
+            section: p.section,
+          })),
+          rerun: true,
+          subDomain: activeSubDomain,
+          inputFile: updatedInputFile.content,
+        }
+      );
+
+      if (!circuitResult) {
+        throw new Error('Rerun returned no result from the backend.');
+      }
+
+      // Map backend model parameters to the frontend UI shape.
+      let parameters = [];
+      const netlist = modelInputFile || circuitResult.netlist || updatedInputFile.content || '';
+      if (modelParameters && modelParameters.length > 0) {
+        parameters = modelParameters.map((p, idx) => ({
+          id: p.id || p.name || `param_${idx}`,
+          name: p.name || p.id || `Parameter ${idx + 1}`,
+          field: p.id || p.name || `param_${idx}`,
+          value: String(p.value),
+          unit: p.unit || '',
+          min: p.min,
+          max: p.max,
+          step: p.step,
+          file_anchor: p.file_anchor || null,
+          editable: p.editable !== false,
+          tag: p.editable !== false ? 'stated' : 'default',
+          section: p.section || (p.editable !== false ? 'COMPONENTS' : 'RESULTS'),
+        }));
+      } else {
+        parameters = updatedParameters;
+      }
+
+      updateSessionInputFile(activeSessionId, { ...updatedInputFile, content: netlist });
+      setSessionParameters(prev => ({ ...prev, [activeSessionId]: parameters }));
+      setSessionResults(prev => ({ ...prev, [activeSessionId]: circuitResult }));
+      setResultsStates(prev => ({ ...prev, [activeSessionId]: 'results' }));
+      setSessionHasSolverRun(prev => ({ ...prev, [activeSessionId]: true }));
+
+      if (circuitResult.schematic_svg) {
+        setSessionSchematics(prev => ({ ...prev, [activeSessionId]: circuitResult.schematic_svg }));
+      }
+
+      const plotResult = generatePlots({
+        success: true,
+        parsedResult: circuitResult,
+        domain: 'Circuits'
+      });
+      if (plotResult && plotResult.success) {
+        setSessionPlots(prev => ({ ...prev, [activeSessionId]: plotResult.allPlots }));
+      }
+
+      // Replace the loading message with the new structured answer.
+      const answerText = circuitResult._structured_answer || '';
+      updateSessionMessageContent(activeSessionId, runMsgId, () => ({
+        text: answerText,
+        isLoading: false,
+        animated: false,
+      }));
+    } catch (error) {
+      console.error('[Circuits Rerun] Error:', error);
+      updateSessionMessageContent(activeSessionId, runMsgId, () => ({
+        text: `Rerun failed: ${error.message}`,
+        isLoading: false,
+      }));
+    } finally {
+      setSessionIsSimulationRunning(prev => ({ ...prev, [activeSessionId]: false }));
+    }
+  };
+
   // changed slider followed by a synchronous onConfirmAndRun(true) call —
   // that pattern silently dropped all but the last edit in a multi-slider
   // batch (each onUpdateField call read the same stale getActiveInputFile/
@@ -1413,19 +1583,26 @@ export default function App() {
       .map(c => `**${c.field}** from **${c.oldValue}** to **${c.value}**`)
       .join(', ');
 
+    const runMsgId = `m-${Date.now()}-ai`;
     appendSessionMessage(activeSessionId, {
-      id: `m-${Date.now()}-ai`,
+      id: runMsgId,
       sender: 'ai',
       text: `Running simulation with updated parameters: ${paramChanges}. Using ${getSolverName(activeDomain)}...`,
       timestamp: formatTimestamp(new Date()),
-      animated: true
+      animated: true,
+      isLoading: true
     });
 
-    // Pass the freshly built inputFile DIRECTLY — do NOT rely on
-    // getActiveInputFile() inside runSimulationForSession, since React
-    // hasn't committed the setState calls above yet in this synchronous tick.
     setSessionIsSimulationRunning(prev => ({ ...prev, [activeSessionId]: true }));
-    runSimulationForSession(activeSessionId, { inputFile: updatedInputFile });
+
+    // For Circuits, use the backend Seemulator rerun contract so the AI can
+    // re-explain the circuit with the new parameter values. For all other
+    // domains, fall back to the generic solver path.
+    if (inputFile?.domain === 'Circuits' || activeDomain === 'Circuits') {
+      runCircuitsRerun(updatedInputFile, updatedParameters, runMsgId);
+    } else {
+      runSimulationForSession(activeSessionId, { inputFile: updatedInputFile });
+    }
   };
 
   const getSolverName = (domain) => {

@@ -22,8 +22,17 @@ router = APIRouter(prefix="/api/circuits", tags=["circuits"])
 
 
 class CircuitSolveRequest(BaseModel):
-    question: str
+    question: str = ""
     provider: str = "groq"
+    app: str = "seemulator"
+    # Context from the current session (Seemulator contract §4)
+    history: list = []
+    active_input_file: str | None = None
+    parameters: list = []
+    # Re-run mode: bypasses Call 1 classification, uses pinned sub_domain/input_file
+    rerun: bool = False
+    sub_domain: str | None = None
+    input_file: str | None = None
 
 
 class CircuitRerunRequest(BaseModel):
@@ -55,6 +64,13 @@ async def solve_circuit(request: CircuitSolveRequest):
         question=request.question,
         call_llm=call_llm,
         task_id=task_id,
+        context=request.active_input_file or "",
+        history=request.history,
+        active_input_file=request.active_input_file,
+        parameters=request.parameters,
+        rerun=request.rerun,
+        sub_domain=request.sub_domain,
+        input_file=request.input_file,
     )
 
     if not output.get("success", True):
@@ -116,42 +132,38 @@ async def rerun_circuit(request: CircuitRerunRequest):
         })
 
 
-def _event_stream(question: str, call_llm, task_id: str):
+def _event_stream(question: str, call_llm, task_id: str, request: CircuitSolveRequest):
     """
-    Sync generator for the Two-Call AI Pipeline.
+    Sync generator for the Seemulator streaming contract.
 
-    Passes through all orchestrator events. When the orchestrator yields
-    answer_done (from Call 2), streams the answer text in small chunks
-    for the frontend's letter-by-letter effect.
-
-    If Call 2 failed or was skipped, falls back to template-based
-    build_structured_answer as a safety net.
+    Passes through all contract-format events from the orchestrator. If the
+    orchestrator does not emit a final `done`, we append one. The SSE layer
+    below formats each event as `event: <name>` + `data: <json>`.
     """
-    answer_text = None
-    for event in solve_circuits_question_stream(question=question, call_llm=call_llm, task_id=task_id):
-        if event.get("stage") == "answer_done":
-            answer_text = event.get("full_text", "")
-            # Don't yield answer_done yet — stream chunks first
-            continue
+    seen_done = False
+    for event in solve_circuits_question_stream(
+        question=question,
+        call_llm=call_llm,
+        task_id=task_id,
+        context=request.active_input_file or "",
+        history=request.history,
+        active_input_file=request.active_input_file,
+        parameters=request.parameters,
+        rerun=request.rerun,
+        sub_domain=request.sub_domain,
+        input_file=request.input_file,
+    ):
         yield event
-        if event.get("stage") == "final_result":
-            result = event.get("result") or {}
+        if event.get("event") == "done":
+            seen_done = True
+        if event.get("event") == "result":
+            result = event.get("data") or {}
             ai_count = result.get("_ai_call_count", 0)
             logger.info(f"[Two-Call Pipeline] AI calls made: {ai_count} for question: {question[:80]}")
 
-            # If Call 2 produced an answer, stream it in chunks
-            if answer_text:
-                chunk_size = 18
-                for i in range(0, len(answer_text), chunk_size):
-                    yield {"stage": "answer_chunk", "text": answer_text[i:i + chunk_size]}
-                yield {"stage": "answer_done", "full_text": answer_text}
-            elif result.get("success", True) is not False:
-                # Fallback: template-based answer if Call 2 was skipped/failed
-                fallback = build_structured_answer(result)
-                chunk_size = 18
-                for i in range(0, len(fallback), chunk_size):
-                    yield {"stage": "answer_chunk", "text": fallback[i:i + chunk_size]}
-                yield {"stage": "answer_done", "full_text": fallback}
+    # Safety net: if the orchestrator did not emit a final done, append one.
+    if not seen_done:
+        yield {"event": "done", "data": {}}
 
 
 async def _sse_from_sync_generator(sync_gen):
@@ -161,6 +173,10 @@ async def _sse_from_sync_generator(sync_gen):
     runs in the default thread pool executor so the event loop isn't
     blocked, and each event is flushed to the client as soon as it's
     produced — genuine incremental streaming, not batched.
+
+    Emits the Seemulator contract format:
+        event: <name>
+        data: <single-line JSON>
     """
     loop = asyncio.get_event_loop()
     it = iter(sync_gen)
@@ -169,7 +185,12 @@ async def _sse_from_sync_generator(sync_gen):
             event = await loop.run_in_executor(None, next, it)
         except StopIteration:
             break
-        yield f"data: {json.dumps(event)}\n\n"
+        event_name = event.get("event", "message")
+        if event_name == "done":
+            yield "event: done\ndata: [DONE]\n\n"
+            continue
+        payload = event.get("data") if event.get("data") is not None else event
+        yield f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
 
 
 @router.post("/solve/stream")
@@ -178,7 +199,7 @@ async def solve_circuit_stream(request: CircuitSolveRequest):
     task_id = f"circ-{uuid.uuid4().hex[:12]}"
     call_llm = _make_llm_caller(request.provider)
 
-    generator = _event_stream(request.question, call_llm, task_id)
+    generator = _event_stream(request.question, call_llm, task_id, request)
     return StreamingResponse(
         _sse_from_sync_generator(generator),
         media_type="text/event-stream",
