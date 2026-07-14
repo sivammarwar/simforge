@@ -1552,7 +1552,21 @@ export default function App() {
       );
       if (idx === -1) return;
       const param = updatedParameters[idx];
-      if (!param.file_anchor) return;
+
+      // Sub-domains without a file_anchor (symbolic_analysis, control_systems,
+      // digital_logic, numerical_processing) don't use netlist-line
+      // substitution — their rerun input is a JSON plan patched server-side
+      // by parameter id. Still update the parameter's own value/tag so the
+      // edit isn't silently dropped; the backend applies it via `id` on rerun.
+      if (!param.file_anchor) {
+        updatedParameters[idx] = {
+          ...param,
+          value: change.value,
+          tag: 'edited',
+          oldValue: param.value,
+        };
+        return;
+      }
 
       const targetLine = param.file_anchor.line - 1;
       if (targetLine < 0 || targetLine >= lines.length) return;

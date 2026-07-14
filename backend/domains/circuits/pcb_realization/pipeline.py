@@ -27,6 +27,25 @@ def _parse_llm_response(raw):
     return parse_llm_json(raw)
 
 
+def _build_model_parameters(plan):
+    """
+    Convert a PCB plan's metrics into structured parameters for the
+    Seemulator Formulated Model pane. No deterministic solver backs this
+    domain (LLM-only); edits are applied directly without recomputation.
+    """
+    return [
+        {
+            "id": f"metrics.{i}.value",
+            "name": m.get("name", f"Metric {i+1}"),
+            "value": m.get("value", ""),
+            "unit": "",
+            "editable": True,
+            "section": "OUTPUT",
+        }
+        for i, m in enumerate(plan.get("metrics", []) or [])
+    ]
+
+
 def _to_standardized(result):
     return {
         "sub_domain": "pcb_realization",
@@ -92,6 +111,16 @@ def run_pcb_realization_pipeline_stream(question, call_llm, task_id, tool="kicad
             return
         yield {"stage": "input_generation", "status": "done",
                "system_type": plan.get("system_type", "PCB Design")}
+
+    # Seemulator contract §2.3: emit model after input generation, before execution.
+    yield {
+        "event": "model",
+        "data": {
+            "input_file": json.dumps(plan, indent=2),
+            "parameters": _build_model_parameters(plan),
+        },
+    }
+
     yield {"stage": "execution", "status": "start", "tool": "kicad"}
     result = {
         "system_type": plan.get("system_type", "PCB Design"),

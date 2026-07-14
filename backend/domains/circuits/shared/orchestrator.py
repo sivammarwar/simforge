@@ -211,8 +211,12 @@ def solve_circuits_question(
             "reason": "User-initiated re-run",
             "run_parallel": True,
         }]
-        updated_input = _apply_parameters_to_input(input_file or active_input_file, parameters, sub_domain)
-        inputs = {sub_domain: {"netlist": updated_input, "parameters": {p.get("id"): p.get("value") for p in parameters if p.get("id")}}}
+        if sub_domain in _JSON_PLAN_SUB_DOMAINS:
+            plan = _apply_parameters_to_json_plan(input_file or active_input_file, parameters)
+            inputs = {sub_domain: plan}
+        else:
+            updated_input = _apply_parameters_to_input(input_file or active_input_file, parameters, sub_domain)
+            inputs = {sub_domain: {"netlist": updated_input, "parameters": {p.get("id"): p.get("value") for p in parameters if p.get("id")}}}
         thinking = [f"Rerun mode: sub-domain={sub_domain}, parameters applied to input file."]
     else:
         context_parts = []
@@ -383,6 +387,70 @@ def _apply_parameters_to_input(input_file: str, parameters: List[Dict[str, Any]]
     return "\n".join(lines)
 
 
+# Sub-domains whose rerun input is a JSON plan dict (produced by their own
+# _build_model_parameters) rather than a SPICE netlist. Parameter ids use
+# dotted paths, e.g. "numeric_values.R" or "numerator.0", to address nested
+# dict/list fields inside the plan.
+_JSON_PLAN_SUB_DOMAINS = {
+    "symbolic_analysis", "digital_logic", "numerical_processing", "control_systems",
+    "rf_em", "pcb_realization", "fpga_realization", "semiconductor_device", "physical_design",
+}
+
+
+def _apply_parameters_to_json_plan(input_file: str, parameters: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Parse a JSON plan (as produced by a sub-domain's `model` event) and apply
+    edited parameter values back into it using dotted-path ids. Falls back to
+    an empty dict if the input_file isn't valid JSON.
+    """
+    import json as _json
+    try:
+        plan = _json.loads(input_file) if input_file else {}
+    except Exception:
+        plan = {}
+
+    def _coerce(raw_value, original):
+        """Coerce a string-typed slider/text edit back to the original field's type."""
+        if isinstance(original, bool) or original is None:
+            return raw_value
+        if isinstance(original, (int, float)):
+            try:
+                return float(raw_value)
+            except (TypeError, ValueError):
+                return raw_value
+        return raw_value
+
+    for p in parameters or []:
+        pid = p.get("id")
+        new_value = p.get("value")
+        # Only leaf-level, explicitly editable fields may be written back —
+        # read-only derived fields (e.g. "expressions.0", "transfer_function")
+        # can be nested dicts/objects, not scalar leaves, and must never be
+        # clobbered by round-tripping the full parameter list through rerun.
+        if not pid or new_value is None or p.get("editable") is False:
+            continue
+        parts = pid.split(".")
+        node = plan
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            key = int(part) if part.isdigit() and isinstance(node, list) else part
+            if is_last:
+                try:
+                    original = node[key] if (isinstance(node, dict) and key in node) or \
+                        (isinstance(node, list) and isinstance(key, int) and 0 <= key < len(node)) else None
+                    node[key] = _coerce(new_value, original)
+                except Exception:
+                    pass
+            else:
+                try:
+                    if isinstance(node, dict) and key not in node:
+                        break
+                    node = node[key]
+                except Exception:
+                    break
+    return plan
+
+
 def _normalize_subdomain_event(event: Dict[str, Any]) -> Dict[str, Any] | None:
     """
     Convert old-format sub-domain pipeline events (which use `stage` + `status`)
@@ -492,46 +560,55 @@ def solve_circuits_question_stream(
             "reason": "User-initiated re-run from the Formulated Model pane",
             "run_parallel": True,
         }]
-        updated_input = _apply_parameters_to_input(input_file or active_input_file, parameters, sub_domain)
-        flat_params = {p.get("id"): p.get("value") for p in parameters if p.get("id")}
 
-        # Infer analysis type from the question text for rerun mode, since
-        # the AI-generated netlist is just component lines without SPICE dot
-        # commands. The ngspice runner builds the full deck from analysis type.
-        rerun_analysis = {"type": "operating_point", "args": {}}
-        q_lower = question.lower() if question else ""
-        if any(w in q_lower for w in ["transient", "step response", "time domain", "pulse", "switching"]):
-            rerun_analysis = {"type": "transient", "args": {"step": "1u", "stop": "5m"}}
-        elif any(w in q_lower for w in ["ac ", "frequency", "bode", "gain", "phase", "magnitude response"]):
-            rerun_analysis = {"type": "ac", "args": {"variation": "dec", "points": 50, "start_freq": "1", "stop_freq": "100Meg"}}
-        elif any(w in q_lower for w in ["dc sweep", "dc transfer", "iv curve"]):
-            rerun_analysis = {"type": "dc_sweep", "args": {}}
+        if sub_domain in _JSON_PLAN_SUB_DOMAINS:
+            # Non-netlist sub-domains: rerun input is the JSON plan dict
+            # (produced by the sub-domain's own `model` event) with edited
+            # parameter values re-applied via dotted-path ids.
+            plan = _apply_parameters_to_json_plan(input_file or active_input_file, parameters)
+            inputs = {sub_domain: plan}
+            thinking.append(f"Rerun mode: sub-domain={sub_domain}, parameters applied to JSON plan.")
+        else:
+            updated_input = _apply_parameters_to_input(input_file or active_input_file, parameters, sub_domain)
+            flat_params = {p.get("id"): p.get("value") for p in parameters if p.get("id")}
 
-        # Extract probe nodes from the netlist component lines (node names
-        # that appear on passive components, excluding ground "0").
-        import re as _re
-        rerun_probe_nodes = []
-        seen_nodes = set()
-        for line in updated_input.splitlines():
-            line = line.strip()
-            if not line or line.startswith("*") or line.startswith("."):
-                continue
-            m = _re.match(r"^\s*[A-Z]\w+\s+(\w+)\s+(\w+)", line, _re.IGNORECASE)
-            if m:
-                for node in (m.group(1), m.group(2)):
-                    if node and node != "0" and node not in seen_nodes:
-                        seen_nodes.add(node)
-                        rerun_probe_nodes.append(node)
+            # Infer analysis type from the question text for rerun mode, since
+            # the AI-generated netlist is just component lines without SPICE dot
+            # commands. The ngspice runner builds the full deck from analysis type.
+            rerun_analysis = {"type": "operating_point", "args": {}}
+            q_lower = question.lower() if question else ""
+            if any(w in q_lower for w in ["transient", "step response", "time domain", "pulse", "switching"]):
+                rerun_analysis = {"type": "transient", "args": {"step": "1u", "stop": "5m"}}
+            elif any(w in q_lower for w in ["ac ", "frequency", "bode", "gain", "phase", "magnitude response"]):
+                rerun_analysis = {"type": "ac", "args": {"variation": "dec", "points": 50, "start_freq": "1", "stop_freq": "100Meg"}}
+            elif any(w in q_lower for w in ["dc sweep", "dc transfer", "iv curve"]):
+                rerun_analysis = {"type": "dc_sweep", "args": {}}
 
-        inputs = {sub_domain: {
-            "netlist": updated_input,
-            "parameters": flat_params,
-            "analysis": rerun_analysis,
-            "probe_nodes": rerun_probe_nodes,
-            "in_scope": True,
-            "system_type": "Rerun",
-        }}
-        thinking.append(f"Rerun mode: sub-domain={sub_domain}, parameters applied to input file.")
+            # Extract probe nodes from the netlist component lines (node names
+            # that appear on passive components, excluding ground "0").
+            import re as _re
+            rerun_probe_nodes = []
+            seen_nodes = set()
+            for line in updated_input.splitlines():
+                line = line.strip()
+                if not line or line.startswith("*") or line.startswith("."):
+                    continue
+                m = _re.match(r"^\s*[A-Z]\w+\s+(\w+)\s+(\w+)", line, _re.IGNORECASE)
+                if m:
+                    for node in (m.group(1), m.group(2)):
+                        if node and node != "0" and node not in seen_nodes:
+                            seen_nodes.add(node)
+                            rerun_probe_nodes.append(node)
+
+            inputs = {sub_domain: {
+                "netlist": updated_input,
+                "parameters": flat_params,
+                "analysis": rerun_analysis,
+                "probe_nodes": rerun_probe_nodes,
+                "in_scope": True,
+                "system_type": "Rerun",
+            }}
+            thinking.append(f"Rerun mode: sub-domain={sub_domain}, parameters applied to input file.")
     else:
         # Normal mode: Call 1 combined selection + input generation.
         # Build context from history + current input file + parameters so the AI

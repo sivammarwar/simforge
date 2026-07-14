@@ -37,6 +37,37 @@ def _parse_llm_response(raw: str) -> Dict[str, Any]:
     return parse_llm_json(raw)
 
 
+def _build_model_parameters(plan: Dict[str, Any]) -> list:
+    """
+    Convert an RF/EM plan into structured parameters for the Seemulator
+    Formulated Model pane. There is no deterministic solver behind this
+    domain (LLM-only), so edits are informational: rerun re-applies the
+    edited values directly without recomputation, and the explanation
+    stage narrates the user-edited numbers.
+    """
+    params = []
+    for i, m in enumerate(plan.get("metrics", []) or []):
+        params.append({
+            "id": f"metrics.{i}.value",
+            "name": m.get("name", f"Metric {i+1}"),
+            "value": m.get("value", ""),
+            "unit": "",
+            "editable": True,
+            "section": "OUTPUT",
+        })
+    s_params = plan.get("s_params") or {}
+    for name, value in s_params.items():
+        params.append({
+            "id": f"s_params.{name}",
+            "name": name,
+            "value": value,
+            "unit": "",
+            "editable": True,
+            "section": "OUTPUT",
+        })
+    return params
+
+
 def _to_standardized(result: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "sub_domain": "rf_em",
@@ -112,6 +143,16 @@ def run_rf_em_pipeline_stream(
             return
         yield {"stage": "input_generation", "status": "done",
                "system_type": plan.get("system_type", "RF/EM Circuit")}
+
+    # Seemulator contract §2.3: emit model after input generation, before execution.
+    yield {
+        "event": "model",
+        "data": {
+            "input_file": json.dumps(plan, indent=2),
+            "parameters": _build_model_parameters(plan),
+        },
+    }
+
     yield {"stage": "execution", "status": "start", "tool": "openems"}
     result = {
         "system_type": plan.get("system_type", "RF/EM Circuit"),

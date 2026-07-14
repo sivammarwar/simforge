@@ -68,6 +68,33 @@ def _to_standardized(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _build_model_parameters(plan: Dict[str, Any]) -> list:
+    """
+    Convert a control-systems plan (numerator/denominator coefficients) into
+    structured editable parameters for the Seemulator Formulated Model pane.
+    """
+    params = []
+    for i, c in enumerate(plan.get("numerator", []) or []):
+        params.append({
+            "id": f"numerator.{i}",
+            "name": f"Numerator coeff. s^{len(plan.get('numerator', [])) - 1 - i}",
+            "value": c,
+            "unit": "",
+            "editable": True,
+            "section": "COMPONENTS",
+        })
+    for i, c in enumerate(plan.get("denominator", []) or []):
+        params.append({
+            "id": f"denominator.{i}",
+            "name": f"Denominator coeff. s^{len(plan.get('denominator', [])) - 1 - i}",
+            "value": c,
+            "unit": "",
+            "editable": True,
+            "section": "COMPONENTS",
+        })
+    return params
+
+
 def _analyze_with_control(num, den, analyses):
     result = {"metrics": [], "status": "completed"}
     sys_tf = ct.TransferFunction(num, den)
@@ -195,6 +222,16 @@ def run_control_systems_pipeline_stream(
 
         yield {"stage": "input_generation", "status": "done",
                "system_type": plan.get("system_type", "Control System")}
+
+    # Seemulator contract §2.3: emit model after input generation, before execution.
+    yield {
+        "event": "model",
+        "data": {
+            "input_file": json.dumps(plan, indent=2),
+            "parameters": _build_model_parameters(plan),
+        },
+    }
+
     yield {"stage": "execution", "status": "start", "tool": "python_control"}
 
     num = plan.get("numerator", [1])

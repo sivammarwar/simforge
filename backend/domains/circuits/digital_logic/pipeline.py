@@ -58,6 +58,42 @@ def _generate_truth_table(expr_str: str, variables: List[str]) -> List[dict]:
     return table
 
 
+def _build_model_parameters(plan: Dict[str, Any]) -> List[dict]:
+    """
+    Convert a digital-logic plan into structured editable parameters for the
+    Seemulator Formulated Model pane. The boolean expression itself is the
+    editable field; rerun re-evaluates the truth table against the edited
+    expression.
+    """
+    params = [{
+        "id": "boolean_expression",
+        "name": "Boolean Expression",
+        "value": plan.get("boolean_expression", ""),
+        "unit": "",
+        "editable": True,
+        "section": "COMPONENTS",
+    }]
+    variables = plan.get("input_variables", []) or []
+    params.append({
+        "id": "input_variables",
+        "name": "Input Variables",
+        "value": ", ".join(variables),
+        "unit": "",
+        "editable": False,
+        "section": "COMPONENTS",
+    })
+    if plan.get("gate_count") is not None:
+        params.append({
+            "id": "gate_count",
+            "name": "Gate Count",
+            "value": plan.get("gate_count"),
+            "unit": "",
+            "editable": False,
+            "section": "OUTPUT",
+        })
+    return params
+
+
 def _to_standardized(result: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "sub_domain": "digital_logic",
@@ -183,6 +219,15 @@ def run_digital_logic_pipeline_stream(
 
         yield {"stage": "input_generation", "status": "done",
                "system_type": plan.get("system_type", "Digital Logic Circuit")}
+
+    # Seemulator contract §2.3: emit model after input generation, before execution.
+    yield {
+        "event": "model",
+        "data": {
+            "input_file": json.dumps(plan, indent=2),
+            "parameters": _build_model_parameters(plan),
+        },
+    }
 
     yield {"stage": "execution", "status": "start", "tool": "yosys"}
 

@@ -51,7 +51,7 @@ def init_db():
         logger.info("Database initialized successfully")
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
-        raise
+        logger.warning("Continuing without database — DB-dependent features will be unavailable.")
 
 def check_db_connection():
     """Check if database is accessible"""

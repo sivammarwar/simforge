@@ -5,6 +5,7 @@ Encapsulates the full analog_sim flow for the new sub-domain architecture.
 Phase 3 foundation: this simply wraps the existing backend/circuits/ modules.
 Later phases will move those modules into this folder.
 """
+import logging
 import math
 import re
 from pathlib import Path
@@ -18,6 +19,8 @@ from circuits.netlist_ai import (
 )
 from circuits.ngspice_runner import run_ngspice, NgspiceRunError
 from circuits.schematic import render_schematic_svg, SchematicError
+
+logger = logging.getLogger(__name__)
 
 
 def run_analog_sim_pipeline(
@@ -69,6 +72,9 @@ def run_analog_sim_pipeline(
             "schematic_svg": None,
             "schematic_error": None,
         }
+        system_type = result["system_type"]
+        if not result["in_scope"] or not netlist.strip():
+            return _to_standardized_result(result, tool)
     elif _prebuilt_netlist:
         netlist = _prebuilt_netlist
         system_type = _system_type or "Circuit"
@@ -138,17 +144,20 @@ def run_analog_sim_pipeline(
         result["simulation_error"] = str(exc)
 
     try:
-        svg_markup, _svg_path = render_schematic_svg(netlist, runs_dir, task_id)
+        from .schemdraw_fallback import render_schematic_schemdraw, SchemdrawFallbackError
+        svg_markup, _svg_path = render_schematic_schemdraw(netlist, runs_dir, task_id)
         result["schematic_svg"] = svg_markup
-    except SchematicError as exc:
-        result["schematic_error"] = str(exc)
+    except (SchemdrawFallbackError, Exception) as exc:
+        logger.warning("schemdraw render failed for task=%s: %s", task_id, exc)
         try:
-            from .schemdraw_fallback import render_schematic_schemdraw, SchemdrawFallbackError
-            svg_markup, _svg_path = render_schematic_schemdraw(netlist, runs_dir, task_id)
+            svg_markup, _svg_path = render_schematic_svg(netlist, runs_dir, task_id)
             result["schematic_svg"] = svg_markup
-            result["schematic_error"] = None
-        except SchemdrawFallbackError:
-            pass
+        except SchematicError as exc2:
+            logger.warning("lcapy fallback render failed for task=%s: %s", task_id, exc2)
+            result["schematic_error"] = str(exc2)
+        except Exception as exc3:
+            logger.warning("lcapy fallback render crashed for task=%s: %s", task_id, exc3)
+            result["schematic_error"] = str(exc3)
 
     return _to_standardized_result(result, tool)
 
@@ -331,19 +340,24 @@ def run_analog_sim_pipeline_stream(
 
     yield {"stage": "schematic", "status": "start"}
     try:
-        svg_markup, _svg_path = render_schematic_svg(netlist, runs_dir, task_id)
+        from .schemdraw_fallback import render_schematic_schemdraw, SchemdrawFallbackError
+        svg_markup, _svg_path = render_schematic_schemdraw(netlist, runs_dir, task_id)
         result["schematic_svg"] = svg_markup
         yield {"stage": "schematic", "status": "done"}
-    except SchematicError as exc:
-        result["schematic_error"] = str(exc)
+    except (SchemdrawFallbackError, Exception) as exc:
+        logger.warning("schemdraw render failed for task=%s: %s", task_id, exc)
         try:
-            from .schemdraw_fallback import render_schematic_schemdraw, SchemdrawFallbackError
-            svg_markup, _svg_path = render_schematic_schemdraw(netlist, runs_dir, task_id)
+            svg_markup, _svg_path = render_schematic_svg(netlist, runs_dir, task_id)
             result["schematic_svg"] = svg_markup
-            result["schematic_error"] = None
             yield {"stage": "schematic", "status": "done"}
-        except SchemdrawFallbackError:
-            yield {"stage": "schematic", "status": "failed", "error": str(exc)}
+        except SchematicError as exc2:
+            logger.warning("lcapy fallback render failed for task=%s: %s", task_id, exc2)
+            result["schematic_error"] = str(exc2)
+            yield {"stage": "schematic", "status": "failed", "error": str(exc2)}
+        except Exception as exc3:
+            logger.warning("lcapy fallback render crashed for task=%s: %s", task_id, exc3)
+            result["schematic_error"] = str(exc3)
+            yield {"stage": "schematic", "status": "failed", "error": str(exc3)}
 
     # Proof-of-work: a real sanity check against the parsed simulation
     # output, not a fabricated step. Confirms the numeric values ngspice

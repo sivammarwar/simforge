@@ -190,6 +190,47 @@ def _generate_step_response(tf_expr: sp.Expr, numeric_values: Dict[str, float],
         return None
 
 
+def _build_model_parameters(plan: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """
+    Convert a symbolic analysis plan into structured editable parameters for
+    the Seemulator Formulated Model pane. Numeric values are editable
+    (drive re-substitution into the transfer function / expressions on
+    rerun); transfer function and expressions are shown read-only.
+    """
+    params: List[Dict[str, Any]] = []
+    numeric_values = plan.get("numeric_values", {}) or {}
+    symbols = plan.get("symbols", {}) or {}
+    for name, value in numeric_values.items():
+        params.append({
+            "id": f"numeric_values.{name}",
+            "name": name,
+            "value": value,
+            "unit": "",
+            "editable": True,
+            "section": "COMPONENTS",
+            "description": symbols.get(name, ""),
+        })
+    if plan.get("transfer_function"):
+        params.append({
+            "id": "transfer_function",
+            "name": "Transfer Function H(s)",
+            "value": plan["transfer_function"],
+            "unit": "",
+            "editable": False,
+            "section": "OUTPUT",
+        })
+    for i, item in enumerate(plan.get("expressions", []) or []):
+        params.append({
+            "id": f"expressions.{i}",
+            "name": item.get("label", f"Expression {i+1}"),
+            "value": item.get("expr", ""),
+            "unit": "",
+            "editable": False,
+            "section": "OUTPUT",
+        })
+    return params
+
+
 def _evaluate_plan(plan: Dict[str, Any]) -> Dict[str, Any]:
     """
     Core symbolic evaluation: takes the plan (from LLM or _prebuilt_input),
@@ -380,6 +421,15 @@ def run_symbolic_pipeline_stream(
 
         yield {"stage": "input_generation", "status": "done",
                "system_type": plan.get("system_type", "Symbolic Circuit")}
+
+    # Seemulator contract §2.3: emit model after input generation, before execution.
+    yield {
+        "event": "model",
+        "data": {
+            "input_file": json.dumps(plan, indent=2),
+            "parameters": _build_model_parameters(plan),
+        },
+    }
 
     yield {"stage": "execution", "status": "start", "tool": "sympy"}
 

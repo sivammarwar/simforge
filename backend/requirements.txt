@@ -11,6 +11,7 @@ websockets
 requests
 itsdangerous
 lcapy==1.26
+schemdraw>=0.20
 # NOTE: Install lcapy with --no-deps to avoid broken "importlib" dependency:
 # pip install lcapy==1.26 --no-deps
 # numpy, matplotlib, sympy, scipy should come from existing requirements

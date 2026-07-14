@@ -67,6 +67,32 @@ def _to_standardized(result: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _build_model_parameters(plan: Dict[str, Any]) -> List[dict]:
+    """
+    Convert a numerical-processing plan into structured parameters for the
+    Seemulator Formulated Model pane. The python_code is the editable field;
+    rerun re-executes the edited code.
+    """
+    return [
+        {
+            "id": "analysis_type",
+            "name": "Analysis Type",
+            "value": plan.get("analysis_type", "unknown"),
+            "unit": "",
+            "editable": False,
+            "section": "COMPONENTS",
+        },
+        {
+            "id": "python_code",
+            "name": "Python Code",
+            "value": plan.get("python_code", ""),
+            "unit": "",
+            "editable": True,
+            "section": "COMPONENTS",
+        },
+    ]
+
+
 def _execute_code(code: str) -> Dict[str, Any]:
     import numpy as np
     local_ns = {"np": np, "signal": signal, "integrate": integrate, "optimize": optimize}
@@ -149,6 +175,16 @@ def run_numerical_pipeline_stream(
 
         yield {"stage": "input_generation", "status": "done",
                "system_type": plan.get("system_type", "Numerical Analysis")}
+
+    # Seemulator contract §2.3: emit model after input generation, before execution.
+    yield {
+        "event": "model",
+        "data": {
+            "input_file": json.dumps(plan, indent=2),
+            "parameters": _build_model_parameters(plan),
+        },
+    }
+
     yield {"stage": "execution", "status": "start", "tool": "scipy"}
 
     result = {
