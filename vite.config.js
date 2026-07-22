@@ -15,7 +15,7 @@ export default defineConfig({
     proxy: {
       // Backend API proxy (existing)
       '/api': {
-        target: 'http://127.0.0.1:8000',
+        target: 'http://127.0.0.1:8787',
         changeOrigin: true,
       },
       // Proxy AI API calls to avoid CORS (use different path to avoid conflict)

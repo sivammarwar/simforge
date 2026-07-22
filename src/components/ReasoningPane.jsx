@@ -736,7 +736,7 @@ export default function ReasoningPane({
             {trizStep === 3 && (
               <div className="flex flex-col gap-3 flex-1 overflow-y-auto pr-1">
                 <span className="step-label">STEP 3: INVENTIVE SOLUTIONS</span>
-                <p className="text-secondary">SimForge ranked the TRIZ moves by your priority and attached the industrial checks required before accepting the design change.</p>
+                <p className="text-secondary">Seemulator ranked the TRIZ moves by your priority and attached the industrial checks required before accepting the design change.</p>
                 
                 <div className="flex flex-col gap-3">
                   {rankedTrizPrinciples.map((pr, idx) => (

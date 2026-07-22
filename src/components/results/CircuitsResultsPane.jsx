@@ -344,13 +344,13 @@ export default function CircuitsResultsPane({
 
   const handleExportJSON = () => resultsData && downloadFile(
     exportResultsToJSON(resultsData, modelData, 'Circuits'),
-    `simforge_circuit_${Date.now()}.json`, 'application/json'
+    `seemulator_circuit_${Date.now()}.json`, 'application/json'
   );
   const handleExportCSV = () => resultsData && downloadFile(
-    exportMetricsToCSV(resultsData), `simforge_circuit_metrics_${Date.now()}.csv`, 'text/csv'
+    exportMetricsToCSV(resultsData), `seemulator_circuit_metrics_${Date.now()}.csv`, 'text/csv'
   );
   const handleExportHTML = () => resultsData && downloadFile(
-    generateHTMLReport(resultsData, modelData, 'Circuits'), `simforge_circuit_report_${Date.now()}.html`, 'text/html'
+    generateHTMLReport(resultsData, modelData, 'Circuits'), `seemulator_circuit_report_${Date.now()}.html`, 'text/html'
   );
 
   const suggestions = [

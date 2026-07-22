@@ -14,6 +14,20 @@ explicit wire ("W 0 0_2; right"). This is NOT circuit-topology-specific —
 it's a generic graph transform that runs on every netlist, so it scales to
 any topology without hardcoding per-circuit-type fixes.
 
+BUGFIX: this rename previously only inspected token positions 1 and 2 (a
+2-terminal component's node pair), which is correct for R/L/C/V/I/D but
+MISSES the 3rd node of a BJT ("Qname collector base emitter") and the 3rd/
+4th nodes of a VCVS op-amp ("Ename out gnd inv noninv"). A grounded BJT
+emitter or op-amp reference terminal beyond position 2 was silently left as
+the literal ground node "0" even when node "0" had already been used
+elsewhere in the netlist — i.e. exactly the "ground reused on multiple
+branches" case this function exists to prevent, causing Lcapy's placement
+solver to overlap components instead of raising a clean loop error. The fix
+below determines how many of a line's leading tokens are actually node
+references (by component-type node-count, not a hardcoded idx 1,2 pair) so
+every ground reference is aliased consistently, regardless of terminal
+count.
+
 IMPORTANT: TEXINPUTS must be set BEFORE any lcapy import, because Lcapy
 caches its circuitikz-availability check at first import. This file sets
 TEXINPUTS at module load time (below) to ensure the check passes.
@@ -86,6 +100,15 @@ from .netlist_ai import _strip_spice_functions_for_lcapy
 
 _GROUND_NAMES = {"0", "gnd", "GND"}
 
+# Number of NODE tokens (immediately after the component name) for each
+# component-type prefix, so ground-aliasing checks the right set of token
+# indices instead of a hardcoded (1, 2) pair. Prefixes not listed default to
+# 2 nodes (the common R/L/C/V/I/D/W case).
+_NODE_COUNT_BY_PREFIX = {
+    "Q": 3,  # BJT: collector, base, emitter
+    "E": 4,  # VCVS (ideal op-amp): out+, out-, in+, in-
+}
+
 
 class SchematicError(Exception):
     pass
@@ -93,7 +116,16 @@ class SchematicError(Exception):
 
 def _normalize_ground_for_layout(netlist_text: str) -> str:
     """Rewrite repeated literal-ground references into distinct node names
-    tied together with wires, so Lcapy's layout solver doesn't see a loop."""
+    tied together with wires, so Lcapy's layout solver doesn't see a loop.
+
+    Covers ALL node positions for a component, not just the first pair —
+    e.g. a BJT's 3rd (emitter) node, or a VCVS op-amp's 3rd/4th nodes — so a
+    grounded terminal anywhere in the line gets correctly aliased if node
+    "0" was already used earlier in the netlist. Missing any node position
+    here would leave a literal, repeated "0" in the netlist, which is
+    exactly the condition that makes Lcapy's placement solver overlap
+    components instead of laying them out cleanly.
+    """
     lines = parse_netlist_lines(netlist_text)
     seen_ground = False
     ground_alias_count = 0
@@ -113,9 +145,10 @@ def _normalize_ground_for_layout(netlist_text: str) -> str:
             out_lines.append(line)
             continue
 
+        node_count = _NODE_COUNT_BY_PREFIX.get(prefix, 2)
         new_tokens = list(tokens)
-        for idx in (1, 2):
-            if idx < len(new_tokens) and new_tokens[idx] in _GROUND_NAMES:
+        for idx in range(1, min(1 + node_count, len(new_tokens))):
+            if new_tokens[idx] in _GROUND_NAMES:
                 if not seen_ground:
                     new_tokens[idx] = "0"
                     seen_ground = True
@@ -165,23 +198,20 @@ def render_schematic_svg(unified_netlist: str, runs_dir: Path, task_id: str) -> 
 
     try:
         print(f"[Schematic] Attempting to draw schematic to {svg_path}")
-        # Try without circuitikz-dependent style first
+        # Draw with component labels only; values are shown in the results pane,
+        # and node markers are unnecessary for circuit readability. Reducing
+        # label text prevents the overlapping glyph clusters produced by
+        # Lcapy/pdf2svg for dense schematics.
+        draw_kwargs = dict(
+            label_ids=True,
+            label_values=False,
+            draw_nodes=False,
+        )
         try:
-            cct.draw(
-                str(svg_path),
-                label_ids=True,
-                label_values=True,
-                draw_nodes="connections",
-            )
+            cct.draw(str(svg_path), **draw_kwargs)
         except Exception as exc:
             print(f"[Schematic] Draw without style failed: {exc}, trying with style='american'")
-            cct.draw(
-                str(svg_path),
-                label_ids=True,
-                label_values=True,
-                draw_nodes="connections",
-                style="american",
-            )
+            cct.draw(str(svg_path), style="american", **draw_kwargs)
         print(f"[Schematic] Draw completed successfully")
     except Exception as exc:
         print(f"[Schematic] Draw failed: {exc}")

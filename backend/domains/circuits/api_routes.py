@@ -15,7 +15,7 @@ from pydantic import BaseModel
 
 from .shared.orchestrator import solve_circuits_question, solve_circuits_question_stream
 from .shared.answer_builder import build_structured_answer
-from circuits.netlist_ai import default_call_llm
+from circuits.netlist_ai import default_call_llm, default_call_llm_stream
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/circuits", tags=["circuits"])
@@ -52,6 +52,12 @@ def _make_llm_caller(provider: str):
     def call_llm(prompt: str) -> str:
         return default_call_llm(prompt, provider=provider)
     return call_llm
+
+
+def _make_llm_stream_caller(provider: str):
+    def call_llm_stream(prompt: str):
+        return default_call_llm_stream(prompt, provider=provider)
+    return call_llm_stream
 
 
 @router.post("/solve", response_model=CircuitSolveResponse)
@@ -152,6 +158,7 @@ def _event_stream(question: str, call_llm, task_id: str, request: CircuitSolveRe
         rerun=request.rerun,
         sub_domain=request.sub_domain,
         input_file=request.input_file,
+        call_llm_stream=_make_llm_stream_caller(request.provider),
     ):
         yield event
         if event.get("event") == "done":

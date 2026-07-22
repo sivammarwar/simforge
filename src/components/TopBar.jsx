@@ -31,7 +31,7 @@ export default function TopBar({
       {/* Left side: Wordmark + Project switcher */}
       <div className="flex items-center gap-3">
         <button className="logo-text logo-home-btn" onClick={onHome} title="Go home and start a new domain session">
-          SimForge
+          Seemulator
         </button>
         <span className="breadcrumb-divider">/</span>
         <div className="project-switcher-container">

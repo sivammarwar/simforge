@@ -132,6 +132,14 @@ Rules:
 - Op-amp: Use VCVS (E-prefix) as ideal op-amp: "E1 out 0 inv noninv 100000; right"
   For inverting amp: Rin from input to inv node, Rf from output to inv, non-inv to ground.
 - Zener diode: Use "D1 2 0 Dzener; down" — pipeline auto-injects .model Dzener D(Bv=5.1 Ibv=20m)
+- IMPORTANT — layout hints must form a CONSISTENT, non-overlapping physical layout:
+  think of the circuit as drawn left-to-right, top-to-bottom. A component's hint
+  describes which direction you move to reach its second node from its first node.
+  Two different components should not be given hints that would place them at the
+  same coordinates (e.g. don't send a source "right" from a node that a resistor
+  also leaves "right" from, unless they're meant to be in parallel — use "down"/"up"
+  to stack parallel branches instead). Inconsistent hints cause overlapping
+  components in the rendered schematic, which is rejected by validation.
 
 ANALYSIS (pick exactly one, for whatever part of the question is feasible):
 - "operating_point": DC-only circuits (resistive dividers, DC bias points). args = {}
@@ -268,12 +276,23 @@ def _validate_netlist_with_lcapy(netlist_text: str) -> None:
     2. Draw check — catches layout/orientation errors (e.g. a source given
        a "right" hint when the surrounding topology needs "down", which
        parses fine but makes Lcapy's placement solver report "the
-       horizontal/vertical schematic graph has a loop"). This is the class
-       of error that previously reached the user unrecoverably at render
-       time, because only stage 1 was checked here. Reuses the same
-       ground-node normalization schematic.py applies at real render time,
-       so this stage doesn't reject netlists that would actually render
-       fine once normalized.
+       horizontal/vertical schematic graph has a loop", OR — worse — makes
+       Lcapy silently place two components on top of each other with no
+       error at all). This is the class of error that was previously
+       reaching the user as an OVERLAPPING SCHEMATIC, because only stage 1
+       was being checked here. Reuses the same ground-node normalization
+       schematic.py applies at real render time, so this stage doesn't
+       reject netlists that would actually render fine once normalized.
+
+    RE-ENABLED (previously disabled): stage 2 was turned off with the
+    justification that "AI layout hints don't always form a consistent DAG",
+    but disabling it just meant bad layouts skipped repair entirely and went
+    straight to rendering — which is exactly what caused components to
+    overlap in the schematic pane. Re-running the actual draw here, inside
+    the repair loop, means a bad layout now gets a concrete Lcapy error fed
+    back to the model so it can fix the direction hints BEFORE anything is
+    shown to the user, instead of failing (or worse, silently mis-rendering)
+    at final render time.
 
     Note: Stage 2 is skipped if pdflatex is not available (e.g. running
     locally without Docker), since Lcapy's draw() requires LaTeX. In that
@@ -293,36 +312,37 @@ def _validate_netlist_with_lcapy(netlist_text: str) -> None:
     except Exception as exc:
         raise NetlistGenerationError(f"lcapy rejected the netlist (parse stage): {exc}")
 
-    # Stage 2: draw check - DISABLED for now because AI layout hints
-    # don't always form a consistent DAG for Lcapy's placement algorithm.
-    # Parse check (Stage 1) still catches syntax errors. Layout errors
-    # will show up at render time with a clear error message.
-    # try:
-    #     import shutil
-    #     if not shutil.which("pdflatex"):
-    #         # LaTeX not available - skip draw validation
-    #         return
-    # except Exception:
-    #     # If shutil check fails, conservatively skip draw validation
-    #     return
+    # Stage 2: draw check. Skipped only if pdflatex genuinely isn't available
+    # (local dev without the Docker image) — in that case we conservatively
+    # fall back to catching layout errors at real render time in schematic.py.
+    try:
+        import shutil
+        if not shutil.which("pdflatex"):
+            # LaTeX not available - skip draw validation
+            return
+    except Exception:
+        # If shutil check fails, conservatively skip draw validation
+        return
 
-    # try:
-    #     from .schematic import _normalize_ground_for_layout
-    #     import tempfile
+    try:
+        from .schematic import _normalize_ground_for_layout
+        import tempfile
 
-    #     layout_netlist = _normalize_ground_for_layout(cleaned)
-    #     cct = Circuit(layout_netlist)
-    #     with tempfile.TemporaryDirectory() as tmp_dir:
-    #         test_path = f"{tmp_dir}/validation_test.svg"
-    #         cct.draw(test_path)
-    # except Exception as exc:
-    #     raise NetlistGenerationError(
-    #         f"lcapy rejected the netlist (layout stage): {exc}\n"
-    #         f"This usually means a component's direction hint (right/down/left/up) "
-    #         f"doesn't match its role in the circuit — for example, a source that "
-    #         f"connects top-rail-to-ground should usually be 'down', not 'right'. "
-    #         f"Check that hints form a consistent left-to-right, top-to-bottom layout."
-    #     )
+        layout_netlist = _normalize_ground_for_layout(cleaned)
+        cct = Circuit(layout_netlist)
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            test_path = f"{tmp_dir}/validation_test.svg"
+            cct.draw(test_path)
+    except Exception as exc:
+        raise NetlistGenerationError(
+            f"lcapy rejected the netlist (layout stage): {exc}\n"
+            f"This usually means a component's direction hint (right/down/left/up) "
+            f"doesn't match its role in the circuit — for example, a source that "
+            f"connects top-rail-to-ground should usually be 'down', not 'right'. "
+            f"Check that hints form a consistent left-to-right, top-to-bottom layout, "
+            f"and that no two components are given hints that would place them at "
+            f"the same coordinates (this is what causes overlapping components)."
+        )
 
 
 def generate_netlist_with_repair_stream(
@@ -481,3 +501,52 @@ def default_call_llm(prompt: str, provider: str = "groq") -> str:
         ],
     )
     return response.choices[0].message.content
+
+
+def default_call_llm_stream(prompt: str, provider: str = "groq"):
+    """
+    Streaming variant of `default_call_llm`. Yields text deltas as they
+    arrive from the model instead of waiting for the full completion —
+    used for the final answer generation so the chat can show genuine
+    live typing instead of a long pause followed by an instant text dump.
+    """
+    from openai import OpenAI  # pip install openai
+
+    provider_config = {
+        "groq": {
+            "base_url": "https://api.groq.com/openai/v1",
+            "env": "GROQ_API_KEY",
+            "model": "llama-3.3-70b-versatile",
+        },
+        "openai": {
+            "base_url": None,
+            "env": "OPENAI_API_KEY",
+            "model": "gpt-4o-mini",
+        },
+        "cerebras": {
+            "base_url": "https://api.cerebras.ai/v1",
+            "env": "CEREBRAS_API_KEY",
+            "model": "gpt-oss-120b",
+        },
+    }
+    cfg = provider_config.get(provider, provider_config["groq"])
+    api_key = os.environ.get(cfg["env"])
+    if not api_key:
+        raise RuntimeError(f"Missing {cfg['env']} environment variable for provider '{provider}'.")
+
+    system_prompt = SYSTEM_PROMPT if prompt.startswith("Circuit question:") else _GENERIC_SYSTEM_PROMPT
+
+    client = OpenAI(api_key=api_key, base_url=cfg["base_url"])
+    stream = client.chat.completions.create(
+        model=cfg["model"],
+        temperature=0.1,
+        messages=[
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": prompt},
+        ],
+        stream=True,
+    )
+    for chunk in stream:
+        delta = chunk.choices[0].delta.content if chunk.choices else None
+        if delta:
+            yield delta

@@ -85,7 +85,7 @@ export default function SettingsModal({
         <div className="modal-header flex items-center justify-between">
           <span className="modal-title flex items-center gap-2">
             <Settings size={14} className="text-secondary" />
-            SimForge Settings Console
+            Seemulator Settings Console
           </span>
           <button onClick={onClose}>
             <X size={16} />

@@ -17,7 +17,6 @@ export default function ModelPane({
   livePlaygroundActive,
   onTogglePlayground
 }) {
-  const [isEditMode, setIsEditMode] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [expandedSection, setExpandedSection] = useState({ assumptions: false, solverInput: false });
   const [activeTooltip, setActiveTooltip] = useState(null); // { category, field }
@@ -25,7 +24,14 @@ export default function ModelPane({
   const [changedFields, setChangedFields] = useState(new Set()); // Set of {section,field} strings
   const [pendingChanges, setPendingChanges] = useState({}); // { fieldKey: newValue } - only commit on button click
 
-  const getSliderBounds = (fieldName) => {
+  const getSliderBounds = (param) => {
+    const backendMin = Number(param?.min);
+    const backendMax = Number(param?.max);
+    const backendStep = Number(param?.step);
+    if (Number.isFinite(backendMin) && Number.isFinite(backendMax) && backendMax > backendMin) {
+      return { min: backendMin, max: backendMax, step: Number.isFinite(backendStep) && backendStep > 0 ? backendStep : (backendMax - backendMin) / 100, unit: param.unit || '' };
+    }
+    const fieldName = param?.field || '';
     const fn = fieldName.toLowerCase();
     // Circuits
     if (fn.includes('voltage') || fn.includes('v(')) return { min: 0.1, max: 50, step: 0.1, unit: 'V' };
@@ -70,29 +76,18 @@ export default function ModelPane({
   };
 
   // Inline editing state
-  const [editingField, setEditingField] = useState(null); // { category, field, value, unit }
+  const [editingField, setEditingField] = useState(null); // { section, field, value }
   
-  const handleEditClick = (category, field, valStr) => {
-    // Extract numeric value and unit
-    const numPart = parseFloat(valStr) || 0;
-    const unitPart = valStr.replace(/[0-9.-]/g, '').trim();
-    setEditingField({ category, field, value: numPart, unit: unitPart });
+  const handleEditClick = (section, field, value) => {
+    setEditingField({ section, field, value: String(value ?? '') });
   };
 
   const saveInlineEdit = () => {
     if (!editingField) return;
-    const { category, field, value, unit } = editingField;
-    const formatted = `${value} ${unit}`.trim();
-    
-    // Tag should become confirmed (if it was inferred) or edited (if it was stated)
-    const currentMeta = modelData[category]?.[field];
-    const isStated = currentMeta?.tag === 'stated' || currentMeta?.tag === 'edited';
-    const nextTag = isStated ? 'edited' : 'confirmed';
-
-    onUpdateField(category, field, formatted, nextTag);
-    
-    // Track unsaved changes
-    setChangedFields(prev => new Set([...prev, `${category}.${field}`]));
+    const { section, field, value } = editingField;
+    const fieldKey = `${section}.${field}`;
+    setPendingChanges(prev => ({ ...prev, [fieldKey]: value }));
+    setChangedFields(prev => new Set([...prev, fieldKey]));
     setHasUnsavedChanges(true);
     
     setEditingField(null);
@@ -157,12 +152,6 @@ export default function ModelPane({
                 <span style={{ color: livePlaygroundActive ? 'var(--accent-primary)' : 'var(--text-secondary)' }}>Live Playground</span>
               </label>
               <button 
-                className={`header-btn ${isEditMode ? 'active' : ''}`}
-                onClick={() => setIsEditMode(!isEditMode)}
-              >
-                <Edit size={12} /> Edit
-              </button>
-              <button 
                 className={`header-btn ${showHistory ? 'active' : ''}`}
                 onClick={() => setShowHistory(!showHistory)}
               >
@@ -203,30 +192,30 @@ export default function ModelPane({
               </div>
 
               {/* Parameters */}
-              <div className="fields-groups p-3 flex-1">
+              <div className="fields-groups">
                 {parameters && parameters.length > 0 ? (
                   <>
                     {parameters.map((param, idx) => {
                       const isEditingThis = editingField && editingField.section === param.section && editingField.field === param.field;
-                      const bounds = getSliderBounds(param.field);
+                      const bounds = getSliderBounds(param);
                       const fieldKey = `${param.section}.${param.field}`;
                       const isChanged = changedFields.has(fieldKey);
                       const hasSlider = bounds && param.editable;
                       
                       return (
-                        <div key={idx} className={`flex flex-col border-b border-[#252A32]/30 pb-2 ${isChanged ? 'changed-field' : ''}`}>
-                          <div className="param-row flex items-center justify-between">
-                            <span className="param-name flex items-center gap-1">
+                        <div key={idx} className={`model-param-card ${isChanged ? 'changed-field' : ''}`}>
+                          <div className="param-row">
+                            <span className="param-name">
                               {param.field}
                               {isChanged && <span className="changed-indicator">●</span>}
                             </span>
-                            <div className="flex items-center gap-2">
+                            <div className="param-value-group">
                               <span className={`param-value ${param.editable ? 'editable' : ''}`}>
                                 {isEditingThis ? (
                                   <input
-                                    type="number"
+                                    type="text"
                                     value={editingField.value}
-                                    onChange={(e) => setEditingField({ ...editingField, value: parseFloat(e.target.value) })}
+                                    onChange={(e) => setEditingField({ ...editingField, value: e.target.value })}
                                     className="inline-edit-input"
                                     autoFocus
                                     onBlur={() => saveInlineEdit()}
@@ -241,7 +230,7 @@ export default function ModelPane({
                               {!hasSlider && param.editable && (
                                 <button 
                                   className="param-edit-btn"
-                                  onClick={() => isEditingThis ? saveInlineEdit() : handleEditClick(param.section, param.field, `${param.value} ${param.unit || ''}`)}
+                                  onClick={() => isEditingThis ? saveInlineEdit() : handleEditClick(param.section, param.field, pendingChanges[fieldKey] ?? param.value)}
                                 >
                                   {isEditingThis ? <Check size={12} /> : <Edit size={12} />}
                                 </button>
@@ -280,16 +269,18 @@ export default function ModelPane({
                     
                     {/* Continue and Run Simulation button */}
                     {hasUnsavedChanges && (
-                      <div className="run-simulation-bar mt-4 p-3 bg-[#1A1D21] border border-[#252A32] rounded-lg">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
-                            <Zap size={14} className="text-amber" />
-                            <span className="text-xs text-secondary">
-                              {changedFields.size} parameter{changedFields.size > 1 ? 's' : ''} changed
-                            </span>
-                          </div>
-                          <button 
-                            className="run-sim-btn flex items-center gap-2 px-3 py-1.5 bg-[var(--accent-primary)] hover:bg-[var(--accent-primary)]/80 text-white text-xs font-semibold rounded transition-colors"
+                      <div className="run-simulation-bar">
+                        <div className="run-simulation-summary">
+                          <span className="run-simulation-icon">
+                            <Zap size={16} />
+                          </span>
+                          <span className="run-simulation-copy">
+                            <strong>{changedFields.size} parameter{changedFields.size > 1 ? 's' : ''} changed</strong>
+                            <small>Apply edits and re-run the simulation</small>
+                          </span>
+                        </div>
+                        <button 
+                            className="run-sim-btn"
                             onClick={() => {
                               // BUGFIX: previously this looped calling onUpdateField(...) once per
                               // pending change, then synchronously called onConfirmAndRun(true).
@@ -310,8 +301,8 @@ export default function ModelPane({
                                 return {
                                   section: param.section,
                                   field: param.field,
-                                  value: `${newValue} ${param.unit || ''}`.trim(),
-                                  oldValue: `${param.value} ${param.unit || ''}`.trim()
+                                  value: String(newValue),
+                                  oldValue: String(param.value)
                                 };
                               }).filter(Boolean);
 
@@ -333,11 +324,10 @@ export default function ModelPane({
                               }
                             }}
                           >
-                            <Play size={12} />
+                            <Play size={16} className="fill-current" />
                             Continue and Run Simulation
                           </button>
                         </div>
-                      </div>
                     )}
                   </>
                 ) : (

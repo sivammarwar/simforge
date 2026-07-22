@@ -1,6 +1,6 @@
-# SimForge
+# Seemulator
 
-SimForge is a chat-driven engineering simulation playground. The chat pane acts as the controller: it formulates models, updates parameters, calls the Groq engineering brain, runs deterministic solvers, and sends results to the Model and Results panes.
+Seemulator is a chat-driven engineering simulation playground. The chat pane acts as the controller: it formulates models, updates parameters, calls the Groq engineering brain, runs deterministic solvers, and sends results to the Model and Results panes.
 
 ## Setup
 
@@ -48,7 +48,7 @@ curl -s http://127.0.0.1:8787/api/providers
 
 ## Solver VM Bridge
 
-SimForge can run lightweight solvers directly on macOS and dispatch VM-hosted solvers over SSH. The default local paths match the verified macOS setup:
+Seemulator can run lightweight solvers directly on macOS and dispatch VM-hosted solvers over SSH. The default local paths match the verified macOS setup:
 
 ```bash
 SIMFORGE_NGSPICE_PATH=/opt/homebrew/bin/ngspice
@@ -70,7 +70,7 @@ SIMFORGE_REMOTE_SIMPLEFOAM_PATH=/usr/bin/simpleFoam
 SIMFORGE_REMOTE_ELMERSOLVER_PATH=/usr/local/bin/ElmerSolver
 ```
 
-When enabled, SimForge checks local PATH first, then the configured VM for the listed tools. Solver job folders are generated on macOS, copied to the VM, executed there, and copied back so artifacts remain available to the API.
+When enabled, Seemulator checks local PATH first, then the configured VM for the listed tools. Solver job folders are generated on macOS, copied to the VM, executed there, and copied back so artifacts remain available to the API.
 
 The current bridge dispatches:
 
@@ -94,4 +94,4 @@ curl -s http://127.0.0.1:8787/api/solver-capabilities
 ## Notes
 
 Some high-risk benchmark prompts use deterministic guardrails before the LLM response. This prevents polished but physically invalid answers for known engineering traps such as loaded RC filter design.
-# SimForge
+# Seemulator

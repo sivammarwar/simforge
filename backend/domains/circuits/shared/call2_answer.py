@@ -12,7 +12,7 @@ Every number and claim must come from the actual results — never invented.
 If multiple sub-domains contributed, this single call weaves them together.
 """
 import json
-from typing import Dict, Any, Callable, List
+from typing import Dict, Any, Callable, Iterator, List
 
 
 _ANSWER_PROMPT = """You are an expert electronics engineering educator. You are given a user's question
@@ -61,25 +61,7 @@ Remember:
 """
 
 
-def generate_final_answer(
-    question: str,
-    results: List[Dict[str, Any]],
-    call_llm: Callable[[str], str],
-    context: str = "",
-) -> str:
-    """
-    Call 2: The second and final AI call. Takes all sub-domain results
-    and produces one structured answer.
-
-    Args:
-        question: The original user question.
-        results: List of standardized result dicts from all sub-domain pipelines.
-        call_llm: The LLM call function.
-        context: Optional conversation context string.
-
-    Returns:
-        The structured answer text (markdown).
-    """
+def _build_answer_prompt(question: str, results: List[Dict[str, Any]], context: str = "") -> str:
     # Serialize results, keeping only the meaningful fields
     serializable = []
     for r in results:
@@ -106,15 +88,14 @@ def generate_final_answer(
 
     results_json = json.dumps(serializable, indent=2, default=str)
 
-    prompt = _ANSWER_PROMPT.format(
+    return _ANSWER_PROMPT.format(
         question=question,
         context=context or "(none)",
         results_json=results_json,
     )
 
-    answer = call_llm(prompt)
-    answer = answer.strip()
 
+def _unwrap_json_answer(answer: str) -> str:
     # Some LLMs wrap the answer in a JSON object like {"answer": "..."} or
     # {"Description": "...", "Intuition": "...", ...}. Strip the wrapper and
     # extract the markdown text inside.
@@ -123,18 +104,80 @@ def generate_final_answer(
             parsed = json.loads(answer)
             if isinstance(parsed, dict):
                 if "answer" in parsed:
-                    answer = parsed["answer"].strip()
-                else:
-                    # Reconstruct from section fields if present
-                    sections = ["Description", "Intuition", "Mathematics",
-                                "Formula/Law(s) Used", "Conclusion"]
-                    parts = []
-                    for sec in sections:
-                        if sec in parsed:
-                            parts.append(f"## {sec}\n{parsed[sec]}")
-                    if parts:
-                        answer = "\n\n".join(parts)
+                    return parsed["answer"].strip()
+                # Reconstruct from section fields if present
+                sections = ["Description", "Intuition", "Mathematics",
+                            "Formula/Law(s) Used", "Conclusion"]
+                parts = []
+                for sec in sections:
+                    if sec in parsed:
+                        parts.append(f"## {sec}\n{parsed[sec]}")
+                if parts:
+                    return "\n\n".join(parts)
         except (json.JSONDecodeError, TypeError):
             pass
-
     return answer
+
+
+def generate_final_answer(
+    question: str,
+    results: List[Dict[str, Any]],
+    call_llm: Callable[[str], str],
+    context: str = "",
+) -> str:
+    """
+    Call 2: The second and final AI call. Takes all sub-domain results
+    and produces one structured answer.
+
+    Args:
+        question: The original user question.
+        results: List of standardized result dicts from all sub-domain pipelines.
+        call_llm: The LLM call function.
+        context: Optional conversation context string.
+
+    Returns:
+        The structured answer text (markdown).
+    """
+    prompt = _build_answer_prompt(question, results, context)
+    answer = call_llm(prompt).strip()
+    return _unwrap_json_answer(answer)
+
+
+def generate_final_answer_stream(
+    question: str,
+    results: List[Dict[str, Any]],
+    call_llm_stream: Callable[[str], Iterator[str]],
+    context: str = "",
+) -> Iterator[str]:
+    """
+    Streaming variant of `generate_final_answer`. Yields text chunks live as
+    the model produces them so the UI can render genuine incremental typing
+    instead of waiting for the whole answer and then dumping it at once.
+
+    If the model wraps its answer in a JSON envelope (rare, since the prompt
+    asks for plain markdown), the first chunk starting with "{" triggers a
+    fallback: buffer the full response, unwrap it, then yield it as one
+    chunk — matching the non-streaming behavior for that edge case.
+    """
+    prompt = _build_answer_prompt(question, results, context)
+    chunk_iter = call_llm_stream(prompt)
+
+    buffered = ""
+    is_json_wrapped = None
+    for delta in chunk_iter:
+        if not delta:
+            continue
+        if is_json_wrapped is None:
+            stripped = (buffered + delta).lstrip()
+            if not stripped:
+                buffered += delta
+                continue
+            is_json_wrapped = stripped.startswith("{")
+        if is_json_wrapped:
+            buffered += delta
+            continue
+        buffered += delta
+        yield delta
+
+    if is_json_wrapped:
+        yield _unwrap_json_answer(buffered.strip())

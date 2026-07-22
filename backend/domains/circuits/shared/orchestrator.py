@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import Dict, Any, Callable, List, Iterator
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from .call1_combined import generate_selection_and_inputs, repair_input
-from .call2_answer import generate_final_answer
+from .call2_answer import generate_final_answer, generate_final_answer_stream
 from .result_registry import parse_result
 from .result_merger import merge_results
+from .schematic_renderer import ensure_schematic
 
 RUNS_DIR = Path(__file__).parent.parent / "simforge_runs"
 
@@ -30,6 +31,36 @@ _VERIFIED_SUB_DOMAINS = {
 
 def _is_verified_sub_domain(sub_domain: str) -> bool:
     return sub_domain in _VERIFIED_SUB_DOMAINS
+
+
+def _build_answer_context(
+    context: str,
+    active_input_file: str,
+    input_file: str,
+    parameters: List[Dict[str, Any]],
+    history: List[Dict[str, Any]],
+    note: str = "",
+) -> str:
+    """Assemble conversation-aware context for the final answer generation call."""
+    parts = []
+    if context and context.strip():
+        parts.append(context.strip())
+    current_file = active_input_file or input_file or ""
+    if current_file:
+        parts.append(f"Current active input file:\n{current_file}")
+    if parameters:
+        param_lines = "\n".join(f"- {p.get('id')}: {p.get('value')} {p.get('unit', '')}" for p in parameters)
+        parts.append(f"Current editable parameters:\n{param_lines}")
+    if history:
+        hist_lines = []
+        for m in history[-10:]:
+            role = m.get("role") or m.get("sender") or "user"
+            text = m.get("content") or m.get("text") or ""
+            hist_lines.append(f"{role}: {text}")
+        parts.append("Recent conversation:\n" + "\n".join(hist_lines))
+    if note:
+        parts.append(note)
+    return "\n\n".join(parts)
 
 
 # ── Sub-domain pipeline dispatch ────────────────────────────────────────────
@@ -231,7 +262,7 @@ def solve_circuits_question(
             hist_lines = []
             for m in history[-10:]:
                 role = m.get("role") or m.get("sender") or "user"
-                text = m.get("text") or ""
+                text = m.get("content") or m.get("text") or ""
                 hist_lines.append(f"{role}: {text}")
             context_parts.append("Recent conversation:\n" + "\n".join(hist_lines))
         call1_context = "\n\n".join(context_parts)
@@ -290,7 +321,7 @@ def solve_circuits_question(
                         parsed = parse_result(sel["sub_domain"], raw)
                     except Exception:
                         parsed = raw
-                    raw_results.append(parsed)
+                    raw_results.append(ensure_schematic(sel["sub_domain"], parsed, inputs.get(sel["sub_domain"])))
                 else:
                     raw_results.append(raw)
     else:
@@ -304,7 +335,7 @@ def solve_circuits_question(
                 except Exception:
                     parsed = raw
                 parsed.setdefault("verified", _is_verified_sub_domain(sel.get("sub_domain")))
-                raw_results.append(parsed)
+                raw_results.append(ensure_schematic(sd, parsed, inputs.get(sd)))
             else:
                 raw_results.append(raw)
 
@@ -318,7 +349,7 @@ def solve_circuits_question(
             except Exception:
                 parsed = raw
             parsed.setdefault("verified", _is_verified_sub_domain(sd))
-            raw_results.append(parsed)
+            raw_results.append(ensure_schematic(sd, parsed, inputs.get(sd)))
         else:
             raw_results.append(raw)
 
@@ -334,7 +365,7 @@ def solve_circuits_question(
     successful_results = [r for r in raw_results if r.get("success", True) and r.get("status") != "failed"]
     if successful_results:
         try:
-            answer_text = generate_final_answer(question, successful_results, call_llm, context)
+            answer_text = generate_final_answer(question, successful_results, call_llm, _build_answer_context(context, active_input_file, input_file, parameters, history))
             ai_call_count += 1
             merged["_structured_answer"] = answer_text
         except Exception as exc:
@@ -519,6 +550,7 @@ def solve_circuits_question_stream(
     rerun: bool = False,
     sub_domain: str = None,
     input_file: str = None,
+    call_llm_stream: Callable[[str], Iterator[str]] = None,
 ) -> Iterator[Dict[str, Any]]:
     """
     Two-Call AI Pipeline — streaming mode, Seemulator event contract.
@@ -626,7 +658,7 @@ def solve_circuits_question_stream(
             hist_lines = []
             for m in history[-10:]:
                 role = m.get("role") or m.get("sender") or "user"
-                text = m.get("text") or ""
+                text = m.get("content") or m.get("text") or ""
                 hist_lines.append(f"{role}: {text}")
             context_parts.append("Recent conversation:\n" + "\n".join(hist_lines))
         call1_context = "\n\n".join(context_parts)
@@ -732,7 +764,7 @@ def solve_circuits_question_stream(
             except Exception:
                 parsed = raw_result
             parsed.setdefault("verified", _is_verified_sub_domain(sd))
-            all_results.append(parsed)
+            all_results.append(ensure_schematic(sd, parsed, prebuilt))
         else:
             all_results.append(raw_result)
 
@@ -774,12 +806,19 @@ def solve_circuits_question_stream(
     successful_results = [r for r in all_results if r.get("success", True) and r.get("status") != "failed"]
     if successful_results:
         try:
-            answer_text = generate_final_answer(question, successful_results, call_llm, context)
+            answer_context = _build_answer_context(context, active_input_file, input_file, parameters, history)
+            if call_llm_stream is not None:
+                # Genuine token-by-token streaming from the LLM — text appears
+                # live as the model generates it, instead of a long silent
+                # wait followed by the whole answer dumping in at once.
+                for delta in generate_final_answer_stream(question, successful_results, call_llm_stream, answer_context):
+                    yield {"event": "token", "data": {"text": delta}}
+            else:
+                answer_text = generate_final_answer(question, successful_results, call_llm, answer_context)
+                chunk_size = 24
+                for i in range(0, len(answer_text), chunk_size):
+                    yield {"event": "token", "data": {"text": answer_text[i:i + chunk_size]}}
             ai_call_count += 1
-            # Stream the answer as token events.
-            chunk_size = 24
-            for i in range(0, len(answer_text), chunk_size):
-                yield {"event": "token", "data": {"text": answer_text[i:i + chunk_size]}}
         except Exception as exc:
             ai_call_count += 1
             yield {

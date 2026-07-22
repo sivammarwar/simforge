@@ -102,8 +102,62 @@ function loadSessionState() {
   }
 }
 
+// BUGFIX: sessionStorage has a hard quota (~5-10MB depending on browser).
+// This snapshot includes sessionResults, which for Circuits carries the full
+// standardized solver result per session — schematic SVG markup and
+// transient/AC time-series arrays included. Those can individually run to
+// hundreds of KB, and previously this call had no error handling at all, so
+// once a session's accumulated results crossed the quota, setItem() threw an
+// uncaught QuotaExceededError from inside a useEffect and crashed the entire
+// React tree (see the error boundary message in the console). A failed
+// "persist so a refresh doesn't lose the session" write should never be
+// allowed to take down a live, working session.
+//
+// Fix: try the full write first (cheapest path, keeps everything restorable
+// after a refresh in the common case). On QuotaExceededError specifically,
+// strip the heavy, regenerate-on-next-run fields (schematic_svg, time_series,
+// frequency_response) out of sessionResults and retry once — losing those on
+// a refresh just means the schematic/plot re-renders from the next solver
+// run instead of from a stale cached snapshot, which is an acceptable
+// trade-off for not crashing. If it still can't fit (or storage is otherwise
+// unusable, e.g. private browsing with storage disabled), log and continue —
+// the in-memory app state is untouched either way.
 function saveSessionStateSnapshot(snapshot) {
-  sessionStorage.setItem(SESSION_STATE_KEY, JSON.stringify(snapshot));
+  try {
+    sessionStorage.setItem(SESSION_STATE_KEY, JSON.stringify(snapshot));
+    return;
+  } catch (err) {
+    const isQuotaError = err && (
+      err.name === 'QuotaExceededError' ||
+      err.name === 'NS_ERROR_DOM_QUOTA_REACHED' ||
+      err.code === 22 ||
+      err.code === 1014
+    );
+
+    if (!isQuotaError) {
+      console.error('[Session Persistence] Failed to save session state:', err);
+      return;
+    }
+
+    try {
+      const trimmedResults = {};
+      for (const [sessId, res] of Object.entries(snapshot.sessionResults || {})) {
+        if (res && typeof res === 'object') {
+          const { schematic_svg, time_series, frequency_response, ...rest } = res;
+          trimmedResults[sessId] = rest;
+        } else {
+          trimmedResults[sessId] = res;
+        }
+      }
+      sessionStorage.setItem(
+        SESSION_STATE_KEY,
+        JSON.stringify({ ...snapshot, sessionResults: trimmedResults })
+      );
+      console.warn('[Session Persistence] sessionStorage quota exceeded — saved session without cached schematic/plot data (they will regenerate on the next run).');
+    } catch (retryErr) {
+      console.error('[Session Persistence] Failed to save session state even after trimming heavy fields. Session will not survive a page refresh, but the current app state is unaffected.', retryErr);
+    }
+  }
 }
 
 function createFreshMemoryData() {
@@ -853,7 +907,8 @@ export default function App() {
       sender: 'ai',
       text: "Processing with new modular pipeline... 🔧",
       timestamp: formatTimestamp(new Date()),
-      isLoading: true
+      isLoading: true,
+      animated: true
     };
     appendSessionMessage(targetSessionId, loadingMsg);
 
@@ -876,6 +931,7 @@ export default function App() {
         const stageLines = [];
         let modelParameters = null;
         let modelInputFile = null;
+        let streamedAnswer = '';
         const circuitResult = await solveCircuitQuestionStream(
           engineeringText, selectedProvider,
           (ev) => {
@@ -927,10 +983,17 @@ export default function App() {
             else if (s === 'schematic' && st === 'failed') line = `${ic} ${sdLbl}: schematic failed: ${ev.error}`;
             else if (s === 'proof_of_work' && st === 'done') line = `${ic} ${sdLbl}: verified: ${ev.detail}`;
             else if (s === 'proof_of_work' && st === 'failed') line = `${ic} ${sdLbl}: check failed: ${ev.detail}`;
-            else if (s === 'answer_chunk') return;
+            else if (s === 'answer_chunk') {
+              streamedAnswer += ev.text || '';
+              updateSessionMessageContent(targetSessionId, loadingMsgId, () => ({
+                text: streamedAnswer,
+                isLoading: true,
+              }));
+              return;
+            }
             else if (s === 'answer_generation' && st === 'start') line = '✍️ Call 2: Generating structured answer (1 AI call)...';
             else if (s === 'answer_generation' && st === 'failed') line = `✍️ Answer generation failed: ${ev.error}`;
-            else if (s === 'answer_done') line = '📄 Structured answer ready';
+            else if (s === 'answer_done') return;
             if (line) {
               stageLines.push(line);
               updateSessionMessageContent(targetSessionId, loadingMsgId, (m) => ({
@@ -1393,6 +1456,7 @@ export default function App() {
     const stageLines = [];
     let modelParameters = null;
     let modelInputFile = null;
+    let streamedAnswer = '';
 
     const firstUserText = getActiveMessages().find(m => m.sender === 'user')?.text
       || 'Re-run with updated parameters';
@@ -1432,7 +1496,15 @@ export default function App() {
           else if (s === 'schematic' && st === 'done') line = `${ic} ${sdLbl}: schematic rendered`;
           else if (s === 'proof_of_work' && st === 'done') line = `${ic} ${sdLbl}: verified: ${ev.detail}`;
           else if (s === 'answer_generation' && st === 'start') line = '✍️ Re-explaining results with updated parameters...';
-          else if (s === 'answer_done') line = '📄 Structured answer ready';
+          else if (s === 'answer_chunk') {
+            streamedAnswer += ev.text || '';
+            updateSessionMessageContent(activeSessionId, runMsgId, () => ({
+              text: streamedAnswer,
+              isLoading: true,
+            }));
+            return;
+          }
+          else if (s === 'answer_done') return;
           else if (s === 'error') line = `⚠️ Error: ${ev.error}`;
           if (line) {
             stageLines.push(line);
@@ -1652,7 +1724,7 @@ export default function App() {
 
   const normalizeBrainResponse = (message, context) => {
     const text = String(message || '').trim();
-    if (/mindmap|Current Routing|Stage\s+\d|SimForge 13-Layer/i.test(text)) {
+    if (/mindmap|Current Routing|Stage\s+\d|Seemulator 13-Layer/i.test(text)) {
       return context.fallback;
     }
     if (/\*\*Description\*\*/i.test(text) && /\*\*Mathematics\*\*/i.test(text)) {
@@ -1663,7 +1735,7 @@ export default function App() {
 
   const formatResultAnswer = ({ domain, model, results, summary, solverName, comparisonText, iterationText }) => {
     const formulaLine = getMathematicsLine(domain, model);
-    return `**Description**\nI ran the ${domain.toLowerCase()} model with **${solverName}** and parsed the result back into SimForge.\n\n**Intuition**\n${summary}\n\n**Mathematics**\n${getResultMathematicsLine(results)}\n\n**Formula/Laws used**\n${formulaLine}${comparisonText || `\n\n**Conclusion**\nThe result is now reflected in the plots, metrics, and model history.`}${iterationText || ''}`;
+    return `**Description**\nI ran the ${domain.toLowerCase()} model with **${solverName}** and parsed the result back into Seemulator.\n\n**Intuition**\n${summary}\n\n**Mathematics**\n${getResultMathematicsLine(results)}\n\n**Formula/Laws used**\n${formulaLine}${comparisonText || `\n\n**Conclusion**\nThe result is now reflected in the plots, metrics, and model history.`}${iterationText || ''}`;
   };
 
   const getMathematicsLine = (domain, model) => {
@@ -2118,7 +2190,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.setAttribute("href", url);
-    link.setAttribute("download", `simforge_audit_logs.csv`);
+    link.setAttribute("download", `seemulator_audit_logs.csv`);
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
@@ -2137,7 +2209,7 @@ export default function App() {
         <div className="border border-[#252A32] bg-[#13161A] p-8 rounded-lg max-w-sm" style={{ border: '1px solid var(--border)', borderRadius: '6px' }}>
           <h2 className="text-primary font-semibold text-base" style={{ color: 'var(--text-primary)', fontSize: '14px', fontWeight: 600 }}>Desktop Environment Required</h2>
           <p className="text-secondary text-sm mt-3 leading-relaxed" style={{ color: 'var(--text-secondary)', fontSize: '12px', marginTop: '12px', lineHeight: '1.5' }}>
-            SimForge is a professional engineering IDE designed for high-density, multi-pane desktop simulations. Please resize your window or switch to a desktop browser.
+            Seemulator is a professional engineering IDE designed for high-density, multi-pane desktop simulations. Please resize your window or switch to a desktop browser.
           </p>
         </div>
       </div>

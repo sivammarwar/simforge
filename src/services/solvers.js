@@ -1,4 +1,4 @@
-// SimForge Solver Client — Circuits only
+// Seemulator Solver Client — Circuits only
 // Phase 0 cleanup: all legacy per-domain analytical solvers (Physics, Structural,
 // Fluids, Semiconductors, Aerospace, Thermal, Control, Materials, Power) were
 // removed. The Circuits pipeline runs through the backend (/api/circuits/solve

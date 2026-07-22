@@ -18,7 +18,7 @@ export function fastSmalltalkReply(promptText) {
   if (/bye|goodbye|see ya/i.test(text)) {
     return `Catch you later. Come back whenever you've got something to simulate.`;
   }
-  return `Hey! I'm SimForge's reasoning engine — give me an engineering system, a question, or even a rough idea and I'll model it, solve it, and walk you through the math.`;
+  return `Hey! I'm Seemulator's reasoning engine — give me an engineering system, a question, or even a rough idea and I'll model it, solve it, and walk you through the math.`;
 }
 
 // Local, no-network heuristic for spotting "follow-up about what we already have"
@@ -34,7 +34,7 @@ function looksLikeFollowup(promptText) {
   return FOLLOWUP_HINT_PATTERN.test(text);
 }
 
-const INTENT_CLASSIFIER_PROMPT = `You are the intent router for an engineering simulation assistant called SimForge.
+const INTENT_CLASSIFIER_PROMPT = `You are the intent router for an engineering simulation assistant called Seemulator.
 Classify the LATEST user message given the recent conversation and the current session state. Respond with ONLY this JSON, nothing else:
 
 {
@@ -195,7 +195,7 @@ export async function generateFollowupAnswer({
     ? `SOLVER RESULT (ground truth — use these exact numbers):\n${JSON.stringify(solverResult.metrics || [], null, 2)}\n\nSolver summary: ${solverResult.plain_summary || 'n/a'}`
     : 'No solver result is stored for this session yet.';
 
-  const fullPrompt = `You are SimForge's engineering assistant for the ${domain || 'current'} domain, answering a follow-up question inside an ongoing session.
+  const fullPrompt = `You are Seemulator's engineering assistant for the ${domain || 'current'} domain, answering a follow-up question inside an ongoing session.
 
 ${FOLLOWUP_ANSWER_INSTRUCTIONS}
 
@@ -271,7 +271,7 @@ System type: ${solverResult.system_type || 'n/a'}
 Assumptions made during formulation: ${(solverResult.assumptions || []).join('; ') || 'none stated'}${freqSample}${timeSample}`;
   }
 
-  const fullPrompt = `You are SimForge's engineering explanation engine for the ${domain} domain.
+  const fullPrompt = `You are Seemulator's engineering explanation engine for the ${domain} domain.
 
 ${ENGINEERING_ANSWER_FORMAT_INSTRUCTIONS}
 

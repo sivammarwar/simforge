@@ -1,4 +1,4 @@
-// External Connectors Registry for SimForge
+// External Connectors Registry for Seemulator
 // Looks up components, material profiles, and fluid data.
 
 const DATASHEETS = {

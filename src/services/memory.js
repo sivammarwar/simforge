@@ -1,4 +1,4 @@
-// Session-only memory service for SimForge.
+// Session-only memory service for Seemulator.
 // Data survives refresh in the same browser session, but is cleared when the tab/session ends.
 
 const STORAGE_KEY = 'simforge_memory_data';
@@ -20,7 +20,7 @@ export function getMemoryData() {
     try {
       return JSON.parse(stored);
     } catch (e) {
-      console.error("Failed to parse SimForge memory", e);
+      console.error("Failed to parse Seemulator memory", e);
     }
   }
 
