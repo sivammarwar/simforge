@@ -187,17 +187,24 @@ async def _sse_from_sync_generator(sync_gen):
     """
     loop = asyncio.get_event_loop()
     it = iter(sync_gen)
+    _SENTINEL = object()
     while True:
-        try:
-            event = await loop.run_in_executor(None, next, it)
-        except StopIteration:
+        event = await loop.run_in_executor(None, lambda it: next(it, _SENTINEL), it)
+        if event is _SENTINEL:
             break
         event_name = event.get("event", "message")
         if event_name == "done":
+            logger.info("[SSE] emitting event 'done'")
             yield "event: done\ndata: [DONE]\n\n"
             continue
         payload = event.get("data") if event.get("data") is not None else event
-        yield f"event: {event_name}\ndata: {json.dumps(payload)}\n\n"
+        try:
+            data = json.dumps(payload)
+        except TypeError as exc:
+            logger.warning(f"[SSE] Non-serializable payload for event '{event_name}': {exc}")
+            data = json.dumps(payload, default=str)
+        logger.info(f"[SSE] emitting event '{event_name}' ({len(data)} bytes)")
+        yield f"event: {event_name}\ndata: {data}\n\n"
 
 
 @router.post("/solve/stream")

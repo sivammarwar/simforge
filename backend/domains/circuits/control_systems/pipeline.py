@@ -23,6 +23,13 @@ try:
 except ImportError:
     HAS_SYMPY = False
 
+try:
+    import scipy.signal as sig
+    import numpy as np
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
+
 
 _LLM_PROMPT = """You are a control systems expert. Given a user question, produce a JSON object describing the control system analysis.
 
@@ -103,17 +110,21 @@ def _analyze_with_control(num, den, analyses):
     if "stability" in analyses or "pole_zero" in analyses:
         poles = sys_tf.poles()
         zeros = sys_tf.zeros()
-        stable = all(p.real < 0 for p in poles)
+        stable = all(float(p.real) < 0 for p in poles)
         result["stability"] = "stable" if stable else "unstable"
-        result["metrics"].append({"name": "Poles", "value": str([f"{p:.4f}" for p in poles])})
-        result["metrics"].append({"name": "Zeros", "value": str([f"{z:.4f}" for z in zeros])})
+        result["metrics"].append({"name": "Poles", "value": str([str(p) for p in poles])})
+        if zeros is not None and len(zeros):
+            result["metrics"].append({"name": "Zeros", "value": str([str(z) for z in zeros])})
 
     if "bode" in analyses:
         try:
             mag, phase, omega = ct.bode(sys_tf, plot=False)
-            result["gain_margin"], result["phase_margin"], _ = ct.margin(sys_tf)
-            result["metrics"].append({"name": "Gain Margin", "value": f"{result['gain_margin']:.2f} dB"})
-            result["metrics"].append({"name": "Phase Margin", "value": f"{result['phase_margin']:.2f} deg"})
+            margins = ct.margin(sys_tf)
+            if margins and len(margins) >= 2:
+                result["gain_margin"] = float(margins[0])
+                result["phase_margin"] = float(margins[1])
+                result["metrics"].append({"name": "Gain Margin", "value": f"{result['gain_margin']:.2f} dB"})
+                result["metrics"].append({"name": "Phase Margin", "value": f"{result['phase_margin']:.2f} deg"})
         except Exception:
             pass
 
@@ -121,9 +132,10 @@ def _analyze_with_control(num, den, analyses):
         try:
             t, y = ct.step_response(sys_tf)
             info = ct.step_info(sys_tf)
-            result["step_info"] = {k: round(v, 4) for k, v in info.items()}
-            for k, v in info.items():
+            result["step_info"] = {k: round(float(v), 4) for k, v in info.items()}
+            for k, v in result["step_info"].items():
                 result["metrics"].append({"name": k, "value": f"{v:.4f}"})
+            result["time_series"] = {"t": [float(x) for x in t], "y": [float(x) for x in y]}
         except Exception:
             pass
 
@@ -150,6 +162,26 @@ def _analyze_with_sympy(num, den, analyses):
     result["metrics"].append({"name": "Poles", "value": str(poles)})
     if zeros:
         result["metrics"].append({"name": "Zeros", "value": str(zeros)})
+
+    if HAS_SCIPY and "step" in analyses:
+        try:
+            sys = sig.TransferFunction([float(c) for c in num], [float(c) for c in den])
+            t, y = sig.step(sys)
+            steady = float(y[-1])
+            peak = float(np.max(y))
+            overshoot = 0.0
+            if abs(steady) > 1e-12:
+                overshoot = max(0.0, (peak - steady) / steady * 100.0)
+            result["step_info"] = {
+                "SteadyStateValue": round(steady, 4),
+                "OvershootPercent": round(overshoot, 4),
+                "Peak": round(peak, 4),
+            }
+            for k, v in result["step_info"].items():
+                result["metrics"].append({"name": k, "value": f"{v:.4f}"})
+            result["time_series"] = {"t": [float(x) for x in t], "y": [float(x) for x in y]}
+        except Exception:
+            pass
 
     return result
 

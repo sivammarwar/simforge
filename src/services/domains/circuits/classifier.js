@@ -20,7 +20,9 @@ const GENERAL_CIRCUIT_KEYWORDS = [
   'resistor', 'capacitor', 'inductor', 'diode', 'transistor', 'op-amp',
   'voltage', 'current', 'ohm', 'farad', 'henry', 'circuit', 'netlist',
   'spice', 'ngspice', 'impedance', 'admittance', 'frequency', 'phase',
-  'gain', 'amplifier', 'filter', 'converter', 'bridge', 'node'
+  'gain', 'amplifier', 'filter', 'converter', 'bridge', 'node',
+  'simpson', 'ode', 'differential', 'numerical', 'wire delay',
+  'physical design', 'interconnect', 'propagation delay', 'elmore'
 ];
 
 /**

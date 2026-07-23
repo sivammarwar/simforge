@@ -28,7 +28,7 @@ _LLM_PROMPT = """You are a numerical analysis expert for circuits. Given a user 
 
 Return JSON with these fields:
 - "system_type": short name (e.g. "FFT Analysis", "Convolution Filter", "Numerical Integration")
-- "analysis_type": one of "fft", "convolution", "integration", "optimization", "matrix_solve", "interpolation"
+- "analysis_type": one of "fft", "convolution", "integration", "ode", "optimization", "matrix_solve", "interpolation"
 - "python_code": a Python code snippet that uses numpy/scipy to compute the result. The code must:
   - Import numpy as np inside the code
   - Define a variable called 'result_dict' that is a dict with keys 'metrics' (list of dicts with 'name' and 'value') and 'computed_values' (list of dicts with 'label' and 'value')
