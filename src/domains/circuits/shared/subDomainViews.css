@@ -273,3 +273,26 @@
   overflow-x: auto;
   white-space: pre-wrap;
 }
+
+.verilog-subheading {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-muted, #888);
+  margin: 10px 0 4px;
+}
+
+/* Gate-level schematic — SVG already carries its own dark-theme colors
+   (fill/stroke set directly by backend/domains/circuits/digital_logic/
+   schematic.py), so no color overrides here, just a scrollable frame. */
+.gate-schematic-container {
+  overflow-x: auto;
+  background: rgba(0, 0, 0, 0.2);
+  border-radius: 6px;
+  padding: 8px;
+}
+
+.gate-schematic-container svg {
+  display: block;
+  max-width: 100%;
+  height: auto;
+}

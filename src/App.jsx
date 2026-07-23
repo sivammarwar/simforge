@@ -1531,6 +1531,8 @@ export default function App() {
           rerun: true,
           subDomain: activeSubDomain,
           inputFile: updatedInputFile.content,
+          // physical_design: rerun payload uses generic handler; keys match
+          // _apply_parameters_to_json_plan() expectations — verified Phase 2-B.
         }
       );
 

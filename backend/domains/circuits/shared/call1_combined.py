@@ -6,12 +6,13 @@ ONE AI call that does both:
   2. Generates the solver-ready input for each selected sub-domain.
 
 For solver-backed sub-domains (analog_sim, symbolic_analysis, digital_logic,
-numerical_processing, control_systems), this produces the input that the real
-solver will consume (netlist, boolean expression, SymPy plan, etc.).
+numerical_processing, control_systems, fpga_realization), this produces the
+input that the real solver will consume (netlist, boolean expression, SymPy
+plan, Verilog source, etc.).
 
-For LLM-only sub-domains (rf_em, pcb_realization, fpga_realization,
-semiconductor_device, physical_design), this same call produces the final
-computed result directly — no separate execution step exists for those.
+For LLM-only sub-domains (rf_em, pcb_realization, semiconductor_device,
+physical_design), this same call produces the final computed result
+directly — no separate execution step exists for those.
 
 The repair loop (re-prompting on validation failure) is an exception path
 and does NOT count toward the normal 2-call baseline.
@@ -21,15 +22,15 @@ import re
 from typing import Dict, Any, Callable, List, Tuple
 
 from .llm_utils import parse_llm_json
-from .tool_selector import list_capabilities
+from .tool_selector import list_capabilities, score_question
 
 
 # Sub-domains backed by real solvers — Call 1 generates input, real execution happens after
 _SOLVER_BACKED = {"analog_sim", "symbolic_analysis", "digital_logic",
-                  "numerical_processing", "control_systems"}
+                  "numerical_processing", "control_systems", "fpga_realization"}
 
 # LLM-only sub-domains — Call 1 produces the final result directly
-_LLM_ONLY = {"rf_em", "pcb_realization", "fpga_realization",
+_LLM_ONLY = {"rf_em", "pcb_realization",
              "semiconductor_device", "physical_design"}
 
 
@@ -113,8 +114,16 @@ Input fields:
 ## pcb_realization (LLM-only)
 Same format as rf_em (metrics, assumptions, plain_summary).
 
-## fpga_realization (LLM-only)
-Same format as rf_em.
+## fpga_realization (Yosys synthesis)
+Real solver: Yosys (real gate-count synthesis, not an estimate). You generate a
+complete, synthesizable Verilog module for the design.
+Input fields:
+  "system_type": "<short label>",
+  "verilog_source": "<a complete, synthesizable Verilog-2005 module — behavioral
+    or structural, exactly one top-level module>",
+  "top_module": "<the exact module name declared in verilog_source>",
+  "assumptions": ["<text>"],
+  "plain_summary": "<one-sentence summary, used only if synthesis can't run>"
 
 ## semiconductor_device (LLM-only)
 Same format as rf_em.
@@ -155,6 +164,76 @@ If the question is not an engineering/circuits question at all, return:
 {{"selections": [], "inputs": {{}}, "out_of_scope": true}}
 
 User question: {question}"""
+
+
+# A "real" analog netlist has at least one SPICE component line: a
+# reference designator (R/L/C/V/I/D/Q/E...) followed by two node names and
+# a value. An empty string, prose, or a bare comment does not count.
+_COMPONENT_LINE_RE = re.compile(r"^\s*[A-Za-z]\w*\s+\S+\s+\S+\s+\S+", re.MULTILINE)
+
+
+def _looks_like_real_netlist(netlist: str) -> bool:
+    if not netlist or not netlist.strip():
+        return False
+    return bool(_COMPONENT_LINE_RE.search(netlist))
+
+
+def _apply_routing_guard(
+    question: str,
+    selections: List[Dict[str, Any]],
+    inputs: Dict[str, Any],
+    thinking: List[str],
+) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Deterministic cross-check over the LLM's sub-domain selection.
+
+    Narrow by design: only overrides when the LLM chose analog_sim AND
+    produced no real circuit netlist AND keyword scoring clearly favors a
+    different sub-domain. Every other selection (including all
+    LLM-vs-keyword tie-breaks for non-analog domains, and any analog_sim
+    selection backed by a real netlist) is left untouched — the LLM's
+    artifact-based judgment remains authoritative there. This is the
+    guard described in the CS-01/DL-01 fix: it prevents the backend from
+    silently executing the legacy analog circuits pipeline when the
+    question has no circuit elements at all.
+    """
+    if not selections:
+        return selections, inputs
+
+    scores = score_question(question)
+    corrected: List[Dict[str, Any]] = []
+
+    for sel in selections:
+        sd = sel.get("sub_domain")
+        if sd == "analog_sim":
+            netlist = (inputs.get("analog_sim") or {}).get("netlist", "")
+            analog_score = scores.get("analog_sim", 0)
+            best_other_sd, best_other_score = None, 0
+            for other_sd, sc in scores.items():
+                if other_sd != "analog_sim" and sc > best_other_score:
+                    best_other_sd, best_other_score = other_sd, sc
+
+            if not _looks_like_real_netlist(netlist) and best_other_sd and best_other_score > analog_score:
+                thinking.append(
+                    "ROUTING GUARD: Call 1 selected analog_sim but produced no real "
+                    f"circuit netlist (analog_sim keyword score={analog_score}); "
+                    f"deterministic keyword scoring favors '{best_other_sd}' "
+                    f"(score={best_other_score}). Overriding route to '{best_other_sd}' "
+                    "instead of silently running the analog SPICE pipeline on a "
+                    "non-circuit question."
+                )
+                sel = dict(sel)
+                sel["sub_domain"] = best_other_sd
+                sel["tool"] = ""
+                sel["reason"] = (sel.get("reason", "") + " [overridden by deterministic routing guard: "
+                                  f"no real netlist + keyword score {best_other_score} for {best_other_sd} "
+                                  f"vs {analog_score} for analog_sim]").strip()
+                inputs = dict(inputs)
+                inputs.pop("analog_sim", None)
+
+        corrected.append(sel)
+
+    return corrected, inputs
 
 
 def generate_selection_and_inputs(
@@ -225,6 +304,9 @@ def generate_selection_and_inputs(
             f"Call 1 runner-up: {runner_up.get('sub_domain')} "
             f"({runner_up.get('reason', 'no reason given')})"
         )
+
+    # Deterministic routing guard — see module docstring / _apply_routing_guard.
+    selections, inputs = _apply_routing_guard(question, selections, inputs, thinking)
 
     for sel in selections:
         sd = sel.get("sub_domain", "?")

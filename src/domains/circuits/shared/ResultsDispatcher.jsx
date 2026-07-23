@@ -16,7 +16,7 @@ import ControlSystemsView from '../control_systems/ControlSystemsView';
 import DigitalLogicView from '../digital_logic/DigitalLogicView';
 import PCBView from '../pcb_realization/PCBView';
 import FPGAView from '../fpga_realization/FPGAView';
-import PhysicalDesignView from '../physical_design/PhysicalDesignView';
+import PhysicalDesignResults from '../physical_design/PhysicalDesignResults';
 import RFEMView from '../rf_em/RFEMView';
 import SemiconductorDeviceView from '../semiconductor_device/SemiconductorDeviceView';
 
@@ -28,7 +28,7 @@ const VIEW_REGISTRY = {
   digital_logic: DigitalLogicView,
   pcb_realization: PCBView,
   fpga_realization: FPGAView,
-  physical_design: PhysicalDesignView,
+  physical_design: PhysicalDesignResults,
   rf_em: RFEMView,
   semiconductor_device: SemiconductorDeviceView,
 };

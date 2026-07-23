@@ -25,3 +25,13 @@ class DigitalLogicResult(BaseModel):
     boolean_expression: Optional[str] = None
     simplified_expression: Optional[str] = None
     gate_count: int = 0
+    gate_netlist: Optional[dict] = None
+    verilog_behavioral: Optional[str] = None
+    verilog_structural: Optional[str] = None
+    gate_count_by_type: Optional[dict] = None
+    # The exact module name declared inside verilog_behavioral/verilog_structural
+    # (e.g. "module <module_name> (...)"). First-class field so consumers
+    # (fpga_realization's orchestration threading) can read it directly
+    # instead of re-deriving it from system_type with a duplicated
+    # sanitization rule that could silently drift out of sync.
+    module_name: Optional[str] = None

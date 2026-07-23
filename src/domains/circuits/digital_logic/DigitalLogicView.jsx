@@ -1,5 +1,6 @@
 /**
- * DigitalLogicView — renders digital logic results with truth tables.
+ * DigitalLogicView — renders digital logic results with truth tables,
+ * the gate-level schematic, and generated Verilog.
  */
 import React from 'react';
 import GenericSubDomainView from '../shared/GenericSubDomainView';
@@ -10,6 +11,9 @@ export default function DigitalLogicView(props) {
   const boolExpr = resultsData?.boolean_expression;
   const simplified = resultsData?.simplified_expression;
   const gateCount = resultsData?.gate_count;
+  const schematicSvg = resultsData?.schematic_svg;
+  const verilogBehavioral = resultsData?.verilog_behavioral;
+  const verilogStructural = resultsData?.verilog_structural;
 
   return (
     <GenericSubDomainView {...props} title="Digital Logic Analysis">
@@ -28,6 +32,32 @@ export default function DigitalLogicView(props) {
       {gateCount > 0 && (
         <div className="result-section">
           <p>Estimated gate count: <strong>{gateCount}</strong></p>
+        </div>
+      )}
+      {schematicSvg && (
+        <div className="result-section">
+          <h4>Gate-Level Schematic</h4>
+          <div
+            className="gate-schematic-container"
+            dangerouslySetInnerHTML={{ __html: schematicSvg }}
+          />
+        </div>
+      )}
+      {(verilogBehavioral || verilogStructural) && (
+        <div className="result-section">
+          <h4>Verilog</h4>
+          {verilogBehavioral && (
+            <>
+              <p className="verilog-subheading">Behavioral</p>
+              <pre className="area-report">{verilogBehavioral}</pre>
+            </>
+          )}
+          {verilogStructural && (
+            <>
+              <p className="verilog-subheading">Structural</p>
+              <pre className="area-report">{verilogStructural}</pre>
+            </>
+          )}
         </div>
       )}
       {truthTable.length > 0 && (

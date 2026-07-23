@@ -15,6 +15,13 @@ from typing import Dict, Any, Callable, Iterator, List
 try:
     from sympy.logic import SOPform, simplify_logic
     from sympy import symbols, sympify
+    # netlist_builder imports sympy.logic.boolalg/Symbol at module level, so
+    # keep it guarded alongside the sympy imports above — if sympy isn't
+    # installed, the existing HAS_SYMPY=False fallback must still work
+    # unaffected (no new hard dependency on synthesis-extension modules).
+    from .netlist_builder import build_gate_netlist
+    from .verilog_gen import generate_behavioral_verilog, generate_structural_verilog
+    from .schematic import render_gate_schematic, GateSchematicError
     HAS_SYMPY = True
 except ImportError:
     HAS_SYMPY = False
@@ -38,6 +45,72 @@ User question: {question}"""
 def _parse_llm_response(raw: str) -> Dict[str, Any]:
     from ..shared.llm_utils import parse_llm_json
     return parse_llm_json(raw)
+
+
+def _normalize_boolean_notation(expr_str: str, variables: List[str]) -> str:
+    """
+    Translate common textbook Boolean notations into the &|~^ operators
+    _eval_bool_expr()/sympify() require, so LLM output like "A'B + AB' + AB"
+    (prime for NOT, juxtaposition/* for AND, + for OR) evaluates correctly
+    instead of silently producing an empty truth table (the LLM is only
+    told to use &|~^ in the prompt, but frequently just echoes back
+    whatever notation the user's own question used).
+
+    Variable-aware: tokenizes using the declared `variables` (longest name
+    first) so multi-character names aren't split into individual letters.
+    Already-correct &|~^ syntax passes through unchanged.
+    """
+    if not expr_str or not expr_str.strip():
+        return expr_str
+
+    text = expr_str.strip()
+
+    # 1. Postfix NOT on a parenthesized group: "(...)'" -> "~(...)".
+    #    Repeat until no more trailing "')" patterns remain (handles nesting).
+    while True:
+        idx = text.find(")'")
+        if idx == -1:
+            break
+        depth = 0
+        open_idx = None
+        for i in range(idx, -1, -1):
+            if text[i] == ")":
+                depth += 1
+            elif text[i] == "(":
+                depth -= 1
+                if depth == 0:
+                    open_idx = i
+                    break
+        if open_idx is None:
+            break  # unbalanced parens — leave it for sympify to raise on
+        text = text[:open_idx] + "~" + text[open_idx:idx + 1] + text[idx + 2:]
+
+    # 2. Postfix NOT on a bare variable: "A'" -> "~A" (longest names first so
+    #    e.g. a variable "Cout" isn't caught mid-name by a shorter "C").
+    for var in sorted(variables, key=len, reverse=True):
+        text = re.sub(re.escape(var) + r"'", "~" + var, text)
+
+    # 3. Explicit AND/OR symbols.
+    text = text.replace("*", "&").replace("+", "|")
+
+    # 4. Implicit juxtaposition AND: tokenize what's left and insert '&'
+    #    between two adjacent operand-tokens with no explicit operator
+    #    between them (e.g. "AB" -> "A&B", "A~B" -> "A&~B").
+    var_alt = "|".join(re.escape(v) for v in sorted(variables, key=len, reverse=True))
+    token_re = re.compile(f"(?:{var_alt})|[()&|~^]") if var_alt else re.compile(r"[()&|~^]")
+    tokens = token_re.findall(text)
+
+    operand_start = set(variables) | {"~", "("}
+    operand_end = set(variables) | {")"}
+
+    out = []
+    for i, tok in enumerate(tokens):
+        out.append(tok)
+        if i + 1 < len(tokens):
+            nxt = tokens[i + 1]
+            if tok in operand_end and nxt in operand_start and nxt not in ("&", "|", "^"):
+                out.append("&")
+    return "".join(out)
 
 
 def _eval_bool_expr(expr_str: str, var_values: dict) -> int:
@@ -117,6 +190,11 @@ def _to_standardized(result: Dict[str, Any]) -> Dict[str, Any]:
         "boolean_expression": result.get("boolean_expression"),
         "simplified_expression": result.get("simplified_expression"),
         "gate_count": result.get("gate_count", 0),
+        "gate_netlist": result.get("gate_netlist"),
+        "verilog_behavioral": result.get("verilog_behavioral"),
+        "verilog_structural": result.get("verilog_structural"),
+        "gate_count_by_type": result.get("gate_count_by_type"),
+        "module_name": result.get("module_name"),
     }
 
 
@@ -156,7 +234,7 @@ def run_digital_logic_pipeline(
     }
 
     variables = plan.get("input_variables", ["A", "B"])
-    expr_str = plan.get("boolean_expression", "")
+    expr_str = _normalize_boolean_notation(plan.get("boolean_expression", ""), variables)
 
     if expr_str and variables:
         try:
@@ -170,12 +248,43 @@ def run_digital_logic_pipeline(
             sym_vars = symbols(" ".join(variables))
             if not isinstance(sym_vars, tuple):
                 sym_vars = (sym_vars,)
-            expr = sympify(expr_str.replace("&", "&").replace("|", "|"))
-            simplified = simplify_logic(expr, form="sop")
+            # convert_xor=False: sympify's default converts '^' to '**' (power),
+            # since '^' means exponentiation in some math notations. Without this,
+            # an XOR question's simplified_expression comes back as nonsense like
+            # "A**B" instead of a real boolean simplification.
+            expr = sympify(expr_str, convert_xor=False)
+            simplified = simplify_logic(expr, form="dnf")
             result["simplified_expression"] = str(simplified)
             result["metrics"].append({"name": "Simplified Expression", "value": str(simplified)})
         except Exception:
             pass
+
+        # Gate netlist / Verilog / schematic — purely deterministic, derived
+        # from the SymPy `simplified` tree above (no LLM calls). Additive and
+        # fail-soft: only runs if simplification above succeeded, and any
+        # failure here must never affect the truth-table/simplified_expression
+        # result already computed.
+        if "simplified_expression" in result:
+            try:
+                output_var = plan.get("output_variable", "Y")
+                netlist = build_gate_netlist(simplified, variables, output_var)
+                result["gate_netlist"] = netlist
+                result["gate_count"] = netlist["total_gate_count"]
+                result["gate_count_by_type"] = netlist["gate_count_by_type"]
+
+                module_name = re.sub(r"\W+", "_", (result.get("system_type") or "logic_module")).strip("_") or "logic_module"
+                result["module_name"] = module_name
+                result["verilog_behavioral"] = generate_behavioral_verilog(
+                    module_name, variables, output_var, expr_str)
+                result["verilog_structural"] = generate_structural_verilog(module_name, netlist)
+
+                try:
+                    result["schematic_svg"] = render_gate_schematic(netlist)
+                except GateSchematicError:
+                    pass  # leave schematic_svg unset — ensure_schematic()'s
+                          # generic 3-box fallback still kicks in downstream
+            except Exception:
+                pass  # synthesis extras are additive — never break the core result
 
     result["plain_summary"] = f"Digital logic analysis completed for {result['system_type']}."
     return _to_standardized(result)
@@ -240,7 +349,7 @@ def run_digital_logic_pipeline_stream(
     }
 
     variables = plan.get("input_variables", ["A", "B"])
-    expr_str = plan.get("boolean_expression", "")
+    expr_str = _normalize_boolean_notation(plan.get("boolean_expression", ""), variables)
 
     if expr_str and variables:
         try:
@@ -253,12 +362,43 @@ def run_digital_logic_pipeline_stream(
             sym_vars = symbols(" ".join(variables))
             if not isinstance(sym_vars, tuple):
                 sym_vars = (sym_vars,)
-            expr = sympify(expr_str)
-            simplified = simplify_logic(expr, form="sop")
+            # convert_xor=False: sympify's default converts '^' to '**' (power),
+            # since '^' means exponentiation in some math notations. Without this,
+            # an XOR question's simplified_expression comes back as nonsense like
+            # "A**B" instead of a real boolean simplification.
+            expr = sympify(expr_str, convert_xor=False)
+            simplified = simplify_logic(expr, form="dnf")
             result["simplified_expression"] = str(simplified)
             result["metrics"].append({"name": "Simplified Expression", "value": str(simplified)})
         except Exception:
             pass
+
+        # Gate netlist / Verilog / schematic — purely deterministic, derived
+        # from the SymPy `simplified` tree above (no LLM calls). Additive and
+        # fail-soft: only runs if simplification above succeeded, and any
+        # failure here must never affect the truth-table/simplified_expression
+        # result already computed.
+        if "simplified_expression" in result:
+            try:
+                output_var = plan.get("output_variable", "Y")
+                netlist = build_gate_netlist(simplified, variables, output_var)
+                result["gate_netlist"] = netlist
+                result["gate_count"] = netlist["total_gate_count"]
+                result["gate_count_by_type"] = netlist["gate_count_by_type"]
+
+                module_name = re.sub(r"\W+", "_", (result.get("system_type") or "logic_module")).strip("_") or "logic_module"
+                result["module_name"] = module_name
+                result["verilog_behavioral"] = generate_behavioral_verilog(
+                    module_name, variables, output_var, expr_str)
+                result["verilog_structural"] = generate_structural_verilog(module_name, netlist)
+
+                try:
+                    result["schematic_svg"] = render_gate_schematic(netlist)
+                except GateSchematicError:
+                    pass  # leave schematic_svg unset — ensure_schematic()'s
+                          # generic 3-box fallback still kicks in downstream
+            except Exception:
+                pass  # synthesis extras are additive — never break the core result
 
     yield {"stage": "execution", "status": "done", "tool": "yosys"}
 

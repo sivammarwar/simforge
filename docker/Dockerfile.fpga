@@ -1,0 +1,13 @@
+FROM ubuntu:22.04
+
+# yosys: synthesis (Phase A). nextpnr-ice40 + fpga-icestorm: real iCE40
+# place & route + timing (Phase B) — fpga-icestorm is Debian/Ubuntu's
+# package name for the icestorm toolchain (icepack/icebox_stat/etc.);
+# Homebrew calls the same toolchain "icestorm".
+RUN apt-get update && apt-get install -y \
+    yosys \
+    nextpnr-ice40 \
+    fpga-icestorm \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /work

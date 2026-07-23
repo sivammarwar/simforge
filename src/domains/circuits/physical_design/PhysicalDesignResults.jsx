@@ -1,10 +1,17 @@
 /**
- * PhysicalDesignView — renders physical design / parasitic results (Tier 3 Preview).
+ * PhysicalDesignResults — renders physical design results.
+ *
+ * The physical_design pipeline is currently LLM-driven (no deterministic
+ * OpenROAD/Magic run backing it yet — see backend/domains/circuits/
+ * physical_design/pipeline.py), so status/metrics/assumptions/summary are
+ * already covered generically by GenericSubDomainView (metrics is a flat
+ * list of {name, value} pairs, not a fixed schema). This only adds the two
+ * fields PhysicalDesignResult actually defines beyond that generic contract:
+ * parasitic_rc and area_report.
  */
-import React from 'react';
 import GenericSubDomainView from '../shared/GenericSubDomainView';
 
-export default function PhysicalDesignView(props) {
+export default function PhysicalDesignResults(props) {
   const { resultsData } = props;
   const parasiticRc = resultsData?.parasitic_rc;
   const areaReport = resultsData?.area_report;

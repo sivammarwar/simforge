@@ -23,14 +23,54 @@ from .schematic_renderer import ensure_schematic
 RUNS_DIR = Path(__file__).parent.parent / "simforge_runs"
 
 # Sub-domains whose results are verified by a real deterministic solver.
+# NOTE: for fpga_realization specifically, this only gates the pre-execution
+# `routed` event's advertised "verified" capability flag — the ACTUAL
+# per-request result always explicitly sets its own "verified" (True only
+# when yosys really ran), which parsed.setdefault("verified", ...) below
+# then leaves untouched since the key is already present. Read
+# _is_verified_sub_domain's call sites before assuming this set alone
+# controls the final "verified" badge.
 _VERIFIED_SUB_DOMAINS = {
     "analog_sim", "symbolic_analysis", "digital_logic",
-    "numerical_processing", "control_systems",
+    "numerical_processing", "control_systems", "fpga_realization",
 }
 
 
 def _is_verified_sub_domain(sub_domain: str) -> bool:
     return sub_domain in _VERIFIED_SUB_DOMAINS
+
+
+# Sub-domains whose sequential input can be threaded from a PRIOR
+# sub-domain's REAL result within the same turn, instead of Call 1's
+# static, pre-computed guess. Narrow, explicit mapping — not a general
+# dependency graph — since only one real chain exists today: digital_logic
+# -> fpga_realization (the gate-level Verilog digital_logic already
+# produces is exactly fpga_realization's input shape).
+def _adapt_prior_result_for_input(sd: str, prior_results: List[Dict[str, Any]]):
+    """
+    For a SEQUENTIAL sub-domain `sd`, check whether an earlier sub-domain's
+    real, already-parsed result (from earlier in this same turn) can supply
+    `sd`'s input. Returns None if no adaptation applies, so the caller
+    falls back to inputs.get(sd) (Call 1's static guess).
+    """
+    if sd == "fpga_realization":
+        for r in prior_results:
+            if r.get("sub_domain") == "digital_logic" and r.get("verilog_structural") and r.get("module_name"):
+                # module_name comes straight from digital_logic's own result
+                # (the exact string it used for "module <name> (...)" in
+                # verilog_structural/verilog_behavioral) — read directly
+                # rather than re-derived, so there is exactly one place
+                # this sanitization rule lives (digital_logic/pipeline.py).
+                system_type = r.get("system_type") or "logic_module"
+                return {
+                    "verilog_source": r["verilog_structural"],
+                    "top_module": r["module_name"],
+                    "system_type": r.get("system_type", "FPGA Realization"),
+                    "assumptions": [
+                        f"Chained from digital_logic's real gate-level synthesis of '{system_type}'."
+                    ],
+                }
+    return None
 
 
 def _build_answer_context(
@@ -341,15 +381,19 @@ def solve_circuits_question(
 
     for sel in sequential_sels:
         sd = sel.get("sub_domain")
+        # Prefer a prior sub-domain's REAL result in this same turn (e.g.
+        # digital_logic's actual verilog_structural) over Call 1's static
+        # guess — see _adapt_prior_result_for_input.
+        prebuilt_input = _adapt_prior_result_for_input(sd, raw_results) or inputs.get(sd)
         raw = _run_sub_domain_batch(sel, question, call_llm, task_id,
-                                    max_repair_attempts, inputs.get(sd))
+                                    max_repair_attempts, prebuilt_input)
         if raw.get("success", True):
             try:
                 parsed = parse_result(sd, raw)
             except Exception:
                 parsed = raw
             parsed.setdefault("verified", _is_verified_sub_domain(sd))
-            raw_results.append(ensure_schematic(sd, parsed, inputs.get(sd)))
+            raw_results.append(ensure_schematic(sd, parsed, prebuilt_input))
         else:
             raw_results.append(raw)
 
@@ -728,7 +772,16 @@ def solve_circuits_question_stream(
     for i, sel in enumerate(selections):
         sd = sel.get("sub_domain")
         tool = sel.get("tool", "")
-        prebuilt = inputs.get(sd)
+        # Sequential selections (run_parallel: False) prefer a prior
+        # sub-domain's REAL result from earlier in this same loop over Call
+        # 1's static guess — see _adapt_prior_result_for_input. Parallel
+        # selections keep using Call 1's guess unconditionally, since there's
+        # no earlier real result they can safely depend on (batch mode runs
+        # those concurrently; nothing here guarantees ordering for them).
+        if not sel.get("run_parallel", True):
+            prebuilt = _adapt_prior_result_for_input(sd, all_results) or inputs.get(sd)
+        else:
+            prebuilt = inputs.get(sd)
 
         raw_result = None
         try:

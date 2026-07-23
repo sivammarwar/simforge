@@ -10,6 +10,7 @@ aiofiles
 websockets
 requests
 itsdangerous
+openai
 lcapy==1.26
 schemdraw>=0.20
 # NOTE: Install lcapy with --no-deps to avoid broken "importlib" dependency:

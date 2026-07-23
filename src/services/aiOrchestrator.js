@@ -8,6 +8,7 @@ import { callAI } from './llmClient';
 
 // Circuits-only classifier
 import { classifyCircuit } from './domains/circuits/classifier';
+import { looksLikeCircuitsQuestion } from './circuitsClient';
 
 /**
  * Classify domain from user question
@@ -24,6 +25,16 @@ export function classifyDomain(question) {
       confidence: result.confidence,
       solver: result.getSolverName ? result.getSolverName() : null
     };
+  }
+  // classifyCircuit() only recognizes classic analog-circuit vocabulary
+  // (resistor, filter, op-amp, ...). The Circuits pipeline now also covers
+  // digital_logic, control_systems, numerical_processing, symbolic_analysis,
+  // rf_em, pcb_realization, fpga_realization, semiconductor_device, and
+  // physical_design sub-domains. Reuse the same keyword set the actual
+  // routing check (circuitsClient.js) uses so this offline classifier
+  // doesn't reject questions the pipeline would otherwise handle correctly.
+  if (looksLikeCircuitsQuestion(question)) {
+    return { domain: 'Circuits', systemType: 'Unspecified', confidence: 0.5, solver: null };
   }
   return { domain: 'Unknown', systemType: 'Unknown', confidence: 0, solver: null };
 }
