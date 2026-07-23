@@ -17,8 +17,11 @@ The repair loop (re-prompting on validation failure) is an exception path
 and does NOT count toward the normal 2-call baseline.
 """
 import json
+import logging
 import re
 from typing import Dict, Any, Callable, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from .llm_utils import parse_llm_json
 from .tool_selector import list_capabilities
@@ -87,9 +90,11 @@ Input fields:
 Real solver: NumPy/SciPy. You generate self-contained Python code.
 Input fields:
   "system_type": "<short label>",
-  "analysis_type": "fft"|"convolution"|"integration"|"optimization"|"matrix_solve"|"interpolation",
+  "analysis_type": "fft"|"convolution"|"integration"|"ode"|"optimization"|"matrix_solve"|"interpolation",
   "python_code": "<self-contained code defining result_dict with 'metrics' and 'computed_values'>",
   "assumptions": ["<text>"]
+
+Examples that route here: Simpson's rule area integration, ODE/initial-value problems (use scipy.integrate.solve_ivp), FFT/convolution, numerical optimization.
 
 ## control_systems (python-control / SymPy)
 Real solver: python-control or SymPy. You generate TF coefficients.
@@ -104,23 +109,23 @@ Input fields:
 No real solver. Call 1 produces the final result directly.
 Input fields:
   "system_type": "<short label>",
-  "metrics": [{{"name": "...", "value": "..."}}],
+  "metrics": [{{"name": "...", "value": <number|string with number+unit>, "unit": "..."}}],
   "s_params": {{"S11": "...", "S21": "..."}},
   "assumptions": ["<text>"],
   "plain_summary": "<one-sentence summary>",
   "unsupported_aspects": ["<things not computable>"]
 
 ## pcb_realization (LLM-only)
-Same format as rf_em (metrics, assumptions, plain_summary).
+Same format as rf_em (metrics, assumptions, plain_summary). Metrics must be numeric, not placeholders.
 
 ## fpga_realization (LLM-only)
-Same format as rf_em.
+Same format as rf_em. Compute concrete resource estimates (LUTs, FFs, timing, power) from the question. Never leave "to be computed" or placeholder values.
 
 ## semiconductor_device (LLM-only)
-Same format as rf_em.
+Same format as rf_em. Compute numerical device/physics results (threshold voltage, drain current, capacitance, etc.). Always substitute given numbers and produce a final numeric value; never return "to be computed".
 
 ## physical_design (LLM-only)
-Same format as rf_em.
+Same format as rf_em. Compute numerical physical-design/parasitic results (wire delay, RC, IR drop, crosstalk, Elmore delay, etc.). Always produce a final numeric value with units; never return "to be computed".
 
 ---
 
@@ -198,10 +203,13 @@ def generate_selection_and_inputs(
             "error": str(exc),
         }
 
+    logger.info(f"[Call1] Raw LLM response (first 500 chars): {raw[:500]}")
+
     try:
         payload = parse_llm_json(raw)
     except Exception as exc:
         thinking.append(f"Call 1 response parse failed: {exc}")
+        logger.warning(f"[Call1] JSON parse failed: {exc}\nRaw response:\n{raw[:1000]}")
         return {
             "selections": [],
             "inputs": {},

@@ -46,6 +46,28 @@ def _build_model_parameters(plan):
     ]
 
 
+_PLACEHOLDER_VALUES = {
+    "", "n/a", "na", "none", "null", "tbd", "to be computed",
+    "to be calculated", "pending", "unknown", "not computed", "placeholder",
+}
+
+
+def _has_real_metrics(plan: dict) -> bool:
+    metrics = plan.get("metrics") or []
+    for m in metrics:
+        v = m.get("value")
+        if v is None or v == "":
+            continue
+        if isinstance(v, (int, float)):
+            return True
+        s = str(v).strip().lower()
+        if not s or s in _PLACEHOLDER_VALUES:
+            continue
+        if re.search(r"\d", s):
+            return True
+    return False
+
+
 def _to_standardized(result):
     return {
         "sub_domain": "semiconductor_device",
@@ -77,6 +99,17 @@ def run_semiconductor_device_pipeline(question, call_llm, task_id, tool="devsim"
             return _to_standardized({
                 "status": "failed", "plain_summary": f"LLM call/parse failed: {e}",
             })
+
+    # Fallback: if Call 1 produced empty or placeholder metrics, re-ask once.
+    if not _has_real_metrics(plan):
+        try:
+            raw = call_llm(_LLM_PROMPT.format(question=question))
+            computed = _parse_llm_response(raw)
+            if _has_real_metrics(computed):
+                plan = computed
+        except Exception:
+            pass
+
     result = {
         "system_type": plan.get("system_type", "Semiconductor Device"),
         "metrics": plan.get("metrics", []),
@@ -111,6 +144,16 @@ def run_semiconductor_device_pipeline_stream(question, call_llm, task_id, tool="
             return
         yield {"stage": "input_generation", "status": "done",
                "system_type": plan.get("system_type", "Semiconductor Device")}
+
+    # Fallback: recompute metrics if Call 1 produced empty/placeholder values.
+    if not _has_real_metrics(plan):
+        try:
+            raw = call_llm(_LLM_PROMPT.format(question=question))
+            computed = _parse_llm_response(raw)
+            if _has_real_metrics(computed):
+                plan = computed
+        except Exception:
+            pass
 
     # Seemulator contract §2.3: emit model after input generation, before execution.
     yield {

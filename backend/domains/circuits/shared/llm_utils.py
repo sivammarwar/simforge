@@ -5,6 +5,59 @@ import re
 from typing import Dict, Any
 
 
+def _eval_math_exprs(json_str: str) -> str:
+    """
+    LLMs sometimes return arithmetic expressions instead of computed numbers
+    inside JSON arrays/values, e.g. [1, 2*0.5*10, 10*10].  This safely
+    evaluates such expressions **outside** of string literals so the result
+    is valid JSON.
+    """
+    # Pattern: a number followed by one or more (operator number) sequences.
+    # Operators: * / + - **  We only match outside of double-quoted strings.
+    _MATH_RE = re.compile(
+        r'(?<!["\w])\s*(\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)'
+        r'\s*([\*\/+\-]\s*\d+(?:\.\d+)?(?:[eE][+-]?\d+)?)+'
+        r'\s*(?!["\w])'
+    )
+
+    out = []
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(json_str):
+        ch = json_str[i]
+        if in_string:
+            out.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == '\\':
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            i += 1
+        else:
+            if ch == '"':
+                in_string = True
+                out.append(ch)
+                i += 1
+            else:
+                # Try to match a math expression starting here
+                rest = json_str[i:]
+                m = _MATH_RE.match(rest)
+                if m:
+                    expr = m.group()
+                    try:
+                        val = eval(expr, {"__builtins__": {}}, {})
+                        out.append(repr(val))
+                    except Exception:
+                        out.append(expr)
+                    i += m.end()
+                else:
+                    out.append(ch)
+                    i += 1
+    return ''.join(out)
+
+
 def _escape_control_chars_in_strings(json_str: str) -> str:
     """
     Escape raw control characters (newline, tab, CR) that appear INSIDE
@@ -69,6 +122,13 @@ def parse_llm_json(raw: str) -> Dict[str, Any]:
         json_str = text
 
     sanitized = _escape_control_chars_in_strings(json_str)
+
+    # Remove trailing commas before closing braces/brackets (common LLM mistake)
+    sanitized = re.sub(r',\s*([}\]])', r'\1', sanitized)
+
+    # Evaluate arithmetic expressions that the LLM may have left in numeric
+    # values (e.g. [1, 2*0.5*10, 10*10] → [1, 10.0, 100])
+    sanitized = _eval_math_exprs(sanitized)
 
     try:
         return json.loads(sanitized)
